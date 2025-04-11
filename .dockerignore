@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE directories
+.idea/
+.vscode/
+
+# Docker files
+Dockerfile
+docker-compose.yaml
+.dockerignore
+
+# Media directories
+media/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Documentation
+README.md
+README_zh.md
+LICENSE

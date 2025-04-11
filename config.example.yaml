@@ -1,0 +1,118 @@
+# MediaScanner Configuration
+
+# General settings
+log_level: "info"
+scan_interval: 5  # in minutes
+
+# LLM settings
+llm:
+  provider: "openai"
+  api_key: "your-openai-api-key"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-3.5-turbo"
+  # Custom system prompt for single file processing
+  system_prompt: |
+    You are a media file analyzer that helps identify movies and TV shows from filenames.
+    Your task is to analyze the given filename and determine:
+    1. The correct title of the media
+    2. Whether it's a movie or TV show
+    3. For TV shows, identify the season and episode numbers
+    4. The year of release (if available)
+    5. The appropriate category for the media based on the provided directory structure
+
+    You should use the searchTMDB, searchTVDB, and searchBangumi functions to get accurate information.
+    For anime content, prioritize using searchBangumi after confirming it's anime through TMDB/TVDB.
+
+    Respond with a structured JSON containing the media information and the appropriate destination path.
+
+  # Custom system prompt for batch processing
+  batch_system_prompt: |
+    You are a media file analyzer that helps identify movies and TV shows from filenames.
+    Your task is to analyze the given filenames and determine for each file:
+    1. The correct title of the media
+    2. Whether it's a movie or TV show
+    3. For TV shows, identify the season and episode numbers
+    4. The year of release (if available)
+    5. The appropriate category for the media based on the provided directory structure
+
+    You should use the searchTMDB, searchTVDB, and searchBangumi functions to get accurate information.
+    For anime content, prioritize using searchBangumi after confirming it's anime through TMDB/TVDB.
+
+    Respond with a structured JSON array containing the media information and the appropriate destination path for each file.
+  max_retries: 3
+  timeout: 30  # in seconds
+
+# API settings
+apis:
+  tmdb:
+    api_key: "your-tmdb-api-key"
+    language: "zh-CN"
+    include_adult: false
+  tvdb:
+    api_key: "your-tvdb-api-key"
+    language: "zh-CN"
+  bangumi:
+    api_key: "your-bangumi-api-key"
+    language: "zh-CN"
+    user_agent: "sleepstars/MediaScanner (https://github.com/sleepstars/MediaScanner)"
+
+# Database settings
+database:
+  type: "postgres"
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "postgres"
+  database: "mediascanner"
+  ssl_mode: "disable"
+
+# Scanner settings
+scanner:
+  media_dirs:
+    - "/path/to/your/media/library"
+  exclude_dirs:
+    - "sample"
+    - "extras"
+    - "featurettes"
+  exclude_patterns:
+    - "sample"
+    - "trailer"
+    - "extra"
+    - "featurette"
+  video_extensions:
+    - ".mkv"
+    - ".mp4"
+    - ".avi"
+    - ".ts"
+    - ".mov"
+    - ".wmv"
+  batch_threshold: 50
+
+# File operations settings
+file_ops:
+  mode: "copy"  # copy, move, symlink
+  destination_root: "/path/to/your/organized/library"
+  directory_structure:
+    电影:
+      - "外语电影"
+      - "国语电影"
+      - "动画电影"
+    电视剧:
+      - "综艺"
+      - "纪录片"
+      - "动画"
+      - "国产剧"
+      - "欧美剧"
+      - "日韩剧"
+      - "其他"
+  movie_template: "{title} ({year})"
+  tv_show_template: "{title} ({year})"
+  episode_template: "{title} - S{season:02d}E{episode:02d} - {episode_title}"
+
+# Notification settings
+notification:
+  enabled: false
+  provider: "telegram"
+  telegram_token: "your-telegram-bot-token"
+  success_channel: "@your_channel"
+  error_group: "-1001234567890"
