@@ -1,4 +1,5 @@
 # Build stage
+# 注意：这个 Dockerfile 将在原生架构上构建，不需要指定平台
 FROM golang:1.24.1-alpine AS builder
 
 # Install git and build dependencies
