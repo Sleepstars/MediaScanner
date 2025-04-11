@@ -16,11 +16,11 @@ jobs:
     name: Build and Push Docker Images
     strategy:
       matrix:
-        platform: [ubuntu-latest, arm64]
+        platform: [ubuntu-latest, ubuntu-22.04-arm]
         include:
           - platform: ubuntu-latest
             arch: amd64
-          - platform: arm64
+          - platform: ubuntu-22.04-arm
             arch: arm64
     runs-on: ${{ matrix.platform }}
     steps:
@@ -42,7 +42,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/mediascanner
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -56,7 +56,7 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ github.repository }}:${{ matrix.arch }}-${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/mediascanner:${{ matrix.arch }}-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -78,7 +78,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/mediascanner
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -88,16 +88,16 @@ jobs:
 
       - name: Create and push manifest
         run: |
-          docker manifest create ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:amd64-${{ github.sha }} \
-            ghcr.io/${{ github.repository }}:arm64-${{ github.sha }}
+          docker manifest create ghcr.io/${{ github.repository_owner }}/mediascanner:latest \
+            ghcr.io/${{ github.repository_owner }}/mediascanner:amd64-${{ github.sha }} \
+            ghcr.io/${{ github.repository_owner }}/mediascanner:arm64-${{ github.sha }}
 
           for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' '); do
             docker manifest create $tag \
-              ghcr.io/${{ github.repository }}:amd64-${{ github.sha }} \
-              ghcr.io/${{ github.repository }}:arm64-${{ github.sha }}
+              ghcr.io/${{ github.repository_owner }}/mediascanner:amd64-${{ github.sha }} \
+              ghcr.io/${{ github.repository_owner }}/mediascanner:arm64-${{ github.sha }}
 
             docker manifest push $tag
           done
 
-          docker manifest push ghcr.io/${{ github.repository }}:latest
+          docker manifest push ghcr.io/${{ github.repository_owner }}/mediascanner:latest
