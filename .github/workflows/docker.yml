@@ -1,28 +1,20 @@
-name: Docker Build and Push
+name: Docker
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build-and-push:
-    name: Build and Push Docker Images
-    strategy:
-      matrix:
-        platform: [ubuntu-latest, ubuntu-22.04-arm]
-        include:
-          - platform: ubuntu-latest
-            arch: amd64
-          - platform: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.platform }}
+  build-amd64:
+    name: Build AMD64 Image
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,24 +22,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set lowercase repository owner
+        id: lowercase
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_ENV
+          echo "Using repository owner: $REPO_OWNER"
+
       - name: Login to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Enable Docker experimental features
-        run: |
-          echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
-          mkdir -p ~/.docker
-          echo '{"experimental": "enabled"}' > ~/.docker/config.json
-
-      - name: Set lowercase repository owner
-        id: lowercase
-        run: echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Extract metadata for Docker
         id: meta
@@ -61,42 +49,84 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
-      - name: Build single-platform image
+      - name: Build and push AMD64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-arm64:
+    name: Build ARM64 Image
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set lowercase repository owner
+        id: lowercase
         run: |
-          # 使用 docker build 而不是 buildx，确保只构建单一架构的镜像
-          docker build \
-            --tag ghcr.io/${{ env.REPO_OWNER }}/mediascanner-${{ matrix.arch }}:${{ github.sha }} \
-            --file Dockerfile \
-            .
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_ENV
+          echo "Using repository owner: $REPO_OWNER"
 
-          # 只有在非 PR 时才推送镜像
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            docker push ghcr.io/${{ env.REPO_OWNER }}/mediascanner-${{ matrix.arch }}:${{ github.sha }}
-          fi
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
-  merge-manifests:
-    name: Merge Multi-Arch Manifests
-    needs: build-and-push
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ghcr.io/${{ env.REPO_OWNER }}/mediascanner
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-manifest:
+    name: Create Multi-Arch Manifest
+    needs: [build-amd64, build-arm64]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Set lowercase repository owner
         id: lowercase
-        run: echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_ENV
+          echo "Using repository owner: $REPO_OWNER"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Enable Docker experimental features
-        run: |
-          echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
-          mkdir -p ~/.docker
-          echo '{"experimental": "enabled"}' > ~/.docker/config.json
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Extract metadata for Docker
         id: meta
@@ -111,31 +141,17 @@ jobs:
             type=sha,format=short
 
       - name: Create and push manifest
-        run: |
-          # 检查镜像是否存在并且是单一架构的
-          echo "Checking amd64 image..."
-          docker manifest inspect ghcr.io/${{ env.REPO_OWNER }}/mediascanner-amd64:${{ github.sha }}
-
-          echo "Checking arm64 image..."
-          docker manifest inspect ghcr.io/${{ env.REPO_OWNER }}/mediascanner-arm64:${{ github.sha }}
-
-          # 创建多架构清单，使用单一架构的镜像
-          echo "Creating manifest for latest tag..."
-          docker manifest create --amend ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest \
-            ghcr.io/${{ env.REPO_OWNER }}/mediascanner-amd64:${{ github.sha }} \
-            ghcr.io/${{ env.REPO_OWNER }}/mediascanner-arm64:${{ github.sha }}
-
-          # 为每个标签创建多架构清单
-          for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' '); do
-            echo "Creating manifest for $tag..."
-            docker manifest create --amend $tag \
-              ghcr.io/${{ env.REPO_OWNER }}/mediascanner-amd64:${{ github.sha }} \
-              ghcr.io/${{ env.REPO_OWNER }}/mediascanner-arm64:${{ github.sha }}
-
-            echo "Pushing manifest for $tag..."
-            docker manifest push $tag
-          done
-
-          # 推送 latest 标签的多架构清单
-          echo "Pushing manifest for latest tag..."
-          docker manifest push ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest
+        uses: Noelware/docker-manifest-action@v1
+        with:
+          inputs: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest
+          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }},ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
+          push: true
+          append: true
+          annotations: |
+            org.opencontainers.image.created=${{ steps.meta.outputs.labels['org.opencontainers.image.created'] }}
+            org.opencontainers.image.description=An intelligent media organization system powered by LLMs.
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=MediaScanner
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
