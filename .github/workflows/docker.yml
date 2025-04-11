@@ -141,12 +141,12 @@ jobs:
             type=sha,format=short
 
       - name: Create and push manifest
-        uses: Noelware/docker-manifest-action@v1
+        uses: Noelware/docker-manifest-action@0.4.3
         with:
-          inputs: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest
-          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }},ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
+          base-image: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest
+          extra-images: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }},ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
           push: true
-          append: true
+          amend: true
           annotations: |
             org.opencontainers.image.created=${{ steps.meta.outputs.labels['org.opencontainers.image.created'] }}
             org.opencontainers.image.description=An intelligent media organization system powered by LLMs.
