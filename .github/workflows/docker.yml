@@ -58,9 +58,11 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
+          # 确保只构建单一架构的镜像
           platforms: linux/${{ matrix.arch }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:${{ matrix.arch }}-${{ github.sha }}
+          # 使用特定的标签格式来区分不同架构的镜像
+          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner-${{ matrix.arch }}:${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -96,16 +98,19 @@ jobs:
 
       - name: Create and push manifest
         run: |
+          # 创建多架构清单，使用单一架构的镜像
           docker manifest create ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest \
-            ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }} \
-            ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
+            ghcr.io/${{ env.REPO_OWNER }}/mediascanner-amd64:${{ github.sha }} \
+            ghcr.io/${{ env.REPO_OWNER }}/mediascanner-arm64:${{ github.sha }}
 
+          # 为每个标签创建多架构清单
           for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' '); do
             docker manifest create $tag \
-              ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }} \
-              ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
+              ghcr.io/${{ env.REPO_OWNER }}/mediascanner-amd64:${{ github.sha }} \
+              ghcr.io/${{ env.REPO_OWNER }}/mediascanner-arm64:${{ github.sha }}
 
             docker manifest push $tag
           done
 
+          # 推送 latest 标签的多架构清单
           docker manifest push ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest
