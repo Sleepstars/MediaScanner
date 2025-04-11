@@ -1,6 +1,6 @@
 module github.com/sleepstars/mediascanner
 
-go 1.23.5
+go 1.24.1
 
 require (
 	github.com/cyruzin/golang-tmdb v1.6.9

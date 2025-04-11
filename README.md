@@ -148,7 +148,7 @@ docker-compose up -d
 This project uses GitHub Actions for continuous integration and delivery:
 
 - **CI Workflow**: Automatically tests and builds the application on each push and pull request
-- **Docker Workflow**: Builds and publishes multi-architecture Docker images (amd64 and arm64) to GitHub Container Registry (ghcr.io)
+- **Docker Workflow**: Builds and publishes multi-architecture Docker images (amd64 and arm64) to GitHub Container Registry (ghcr.io) using native runners for each architecture
 - **Release Workflow**: Automatically creates releases with binaries for multiple platforms when a tag is pushed
 
 ## Special Notes
