@@ -25,8 +25,12 @@ vendor/
 
 # Docker files
 Dockerfile
-docker-compose.yaml
+docker-compose.yml
 .dockerignore
+
+# CI/CD files
+.github/
+.goreleaser.yml
 
 # Media directories
 media/

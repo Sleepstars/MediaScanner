@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  mediascanner:
+    image: ghcr.io/sleepstars/mediascanner:latest
+    container_name: mediascanner
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/root/config.yaml
+      - ./data:/root/data
+      - /path/to/your/media/input:/media/input
+      - /path/to/your/media/output:/media/output
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - TVDB_API_KEY=${TVDB_API_KEY}
+      - BANGUMI_API_KEY=${BANGUMI_API_KEY}
+      - TZ=Asia/Shanghai
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: mediascanner-postgres
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=mediascanner
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
+    driver: local

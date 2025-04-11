@@ -111,6 +111,46 @@ This project makes use of the following data sources and open-source libraries:
 - [echo](https://github.com/labstack/echo) - High performance web framework for Go
 - [godotenv](https://github.com/joho/godotenv) - Go library for loading environment variables from .env files
 
+## Docker Support
+
+MediaScanner provides full Docker support with multi-architecture images (amd64 and arm64).
+
+### Using Docker
+
+```bash
+# Pull the image
+docker pull ghcr.io/sleepstars/mediascanner:latest
+
+# Run with environment variables
+docker run -d \
+  -v /path/to/config.yaml:/root/config.yaml \
+  -v /path/to/media/input:/media/input \
+  -v /path/to/media/output:/media/output \
+  -e LLM_API_KEY=your-openai-api-key \
+  -e TMDB_API_KEY=your-tmdb-api-key \
+  -e TVDB_API_KEY=your-tvdb-api-key \
+  -e BANGUMI_API_KEY=your-bangumi-api-key \
+  ghcr.io/sleepstars/mediascanner:latest
+```
+
+### Using Docker Compose
+
+1. Edit the `docker-compose.yml` file to configure your media paths
+2. Create a `.env` file with your API keys
+3. Start the services:
+
+```bash
+docker-compose up -d
+```
+
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and delivery:
+
+- **CI Workflow**: Automatically tests and builds the application on each push and pull request
+- **Docker Workflow**: Builds and publishes multi-architecture Docker images (amd64 and arm64) to GitHub Container Registry (ghcr.io)
+- **Release Workflow**: Automatically creates releases with binaries for multiple platforms when a tag is pushed
+
 ## Special Notes
 
 - Bangumi API usage follows their [User-Agent requirements](https://github.com/bangumi/api/blob/master/docs-raw/user%20agent.md), using `sleepstars/MediaScanner (https://github.com/sleepstars/MediaScanner)` as the default User-Agent.
