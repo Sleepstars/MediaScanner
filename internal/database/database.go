@@ -17,21 +17,18 @@ type Database struct {
 }
 
 // New creates a new database connection
-func New(cfg *config.Config) (*Database, error) {
+func New(cfg *config.DatabaseConfig) (*Database, error) {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.Database,
-		cfg.Database.SSLMode,
+		cfg.Host,
+		cfg.Port,
+		cfg.User,
+		cfg.Password,
+		cfg.Database,
+		cfg.SSLMode,
 	)
 
 	// Configure GORM logger
 	gormLogger := logger.Default
-	if cfg.LogLevel == "debug" {
-		gormLogger = logger.Default.LogMode(logger.Info)
-	}
 
 	// Connect to the database
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sashabaranov/go-openai"
 	"github.com/sleepstars/mediascanner/internal/config"
+	"github.com/sleepstars/mediascanner/internal/worker"
 )
 
 // LLM represents the LLM client
@@ -17,13 +18,14 @@ type LLM struct {
 	client      *openai.Client
 	config      *config.LLMConfig
 	functionMap map[string]FunctionHandler
+	semaphore   worker.Semaphore
 }
 
 // FunctionHandler is a function that handles a function call from the LLM
 type FunctionHandler func(ctx context.Context, args json.RawMessage) (interface{}, error)
 
 // New creates a new LLM client
-func New(cfg *config.LLMConfig) (*LLM, error) {
+func New(cfg *config.LLMConfig, semaphore worker.Semaphore) (*LLM, error) {
 	if cfg.APIKey == "" {
 		return nil, errors.New("LLM API key is required")
 	}
@@ -35,10 +37,16 @@ func New(cfg *config.LLMConfig) (*LLM, error) {
 
 	client := openai.NewClientWithConfig(clientConfig)
 
+	// If no semaphore is provided, use a no-op semaphore
+	if semaphore == nil {
+		semaphore = worker.NewNoOpSemaphore()
+	}
+
 	return &LLM{
 		client:      client,
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
+		semaphore:   semaphore,
 	}, nil
 }
 
@@ -49,6 +57,11 @@ func (l *LLM) RegisterFunction(name string, handler FunctionHandler) {
 
 // ProcessMediaFile processes a media file using the LLM
 func (l *LLM) ProcessMediaFile(ctx context.Context, filename string, directoryStructure map[string][]string) (*MediaFileResult, error) {
+	// Acquire semaphore
+	if err := l.semaphore.Acquire(ctx); err != nil {
+		return nil, fmt.Errorf("failed to acquire LLM semaphore: %w", err)
+	}
+	defer l.semaphore.Release()
 	// Use the system prompt from configuration
 	systemMessage := l.config.SystemPrompt
 
@@ -229,6 +242,11 @@ func (l *LLM) ProcessMediaFile(ctx context.Context, filename string, directorySt
 
 // ProcessBatchFiles processes a batch of media files using the LLM
 func (l *LLM) ProcessBatchFiles(ctx context.Context, filenames []string, directoryStructure map[string][]string) ([]*MediaFileResult, error) {
+	// Acquire semaphore
+	if err := l.semaphore.Acquire(ctx); err != nil {
+		return nil, fmt.Errorf("failed to acquire LLM semaphore: %w", err)
+	}
+	defer l.semaphore.Release()
 	// Use the batch system prompt from configuration
 	systemMessage := l.config.BatchSystemPrompt
 

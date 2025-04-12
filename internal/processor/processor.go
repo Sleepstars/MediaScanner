@@ -16,21 +16,23 @@ import (
 	"github.com/sleepstars/mediascanner/internal/llm"
 	"github.com/sleepstars/mediascanner/internal/models"
 	"github.com/sleepstars/mediascanner/internal/notification"
+	"github.com/sleepstars/mediascanner/internal/worker"
 )
 
 // Processor represents the media processor
 type Processor struct {
-	config    *config.Config
-	db        *database.Database
-	llmClient *llm.LLM
-	apiClient *api.API
-	fileOps   *fileops.FileOps
-	notifier  *notification.Notifier
+	config     *config.Config
+	db         *database.Database
+	llmClient  *llm.LLM
+	apiClient  *api.API
+	fileOps    *fileops.FileOps
+	notifier   *notification.Notifier
+	workerPool worker.WorkerPool
 }
 
 // New creates a new processor
 func New(cfg *config.Config, db *database.Database, llmClient *llm.LLM, apiClient *api.API, fileOps *fileops.FileOps, notifier *notification.Notifier) *Processor {
-	return &Processor{
+	p := &Processor{
 		config:    cfg,
 		db:        db,
 		llmClient: llmClient,
@@ -38,6 +40,15 @@ func New(cfg *config.Config, db *database.Database, llmClient *llm.LLM, apiClien
 		fileOps:   fileOps,
 		notifier:  notifier,
 	}
+
+	// Create worker pool if enabled
+	if cfg.WorkerPool.Enabled {
+		// Create a worker pool with the processor as the task processor
+		pool := worker.New(&cfg.WorkerPool, p.processTask)
+		p.workerPool = pool
+	}
+
+	return p
 }
 
 // ProcessMediaFile processes a media file

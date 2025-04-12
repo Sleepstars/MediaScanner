@@ -109,6 +109,16 @@ file_ops:
   tv_show_template: "{title} ({year})"
   episode_template: "{title} - S{season:02d}E{episode:02d} - {episode_title}"
 
+# Worker pool settings
+worker_pool:
+  enabled: true
+  worker_count: 4                # Number of workers for processing files
+  queue_size: 100                # Size of the task queue
+  batch_worker_count: 2          # Number of workers for batch processing
+  max_concurrent_llm: 2          # Maximum concurrent LLM requests
+  max_concurrent_api: 5          # Maximum concurrent API requests
+  max_concurrent_file_op: 3      # Maximum concurrent file operations
+
 # Notification settings
 notification:
   enabled: false

@@ -29,6 +29,9 @@ type Config struct {
 	// File operations settings
 	FileOps FileOpsConfig `json:"file_ops" yaml:"file_ops"`
 
+	// Worker pool settings
+	WorkerPool WorkerPoolConfig `json:"worker_pool" yaml:"worker_pool"`
+
 	// Notification settings
 	Notification NotificationConfig `json:"notification" yaml:"notification"`
 }
@@ -100,6 +103,17 @@ type FileOpsConfig struct {
 	MovieTemplate      string              `json:"movie_template" yaml:"movie_template"`
 	TVShowTemplate     string              `json:"tv_show_template" yaml:"tv_show_template"`
 	EpisodeTemplate    string              `json:"episode_template" yaml:"episode_template"`
+}
+
+// WorkerPoolConfig represents the worker pool configuration
+type WorkerPoolConfig struct {
+	Enabled             bool `json:"enabled" yaml:"enabled"`
+	WorkerCount         int  `json:"worker_count" yaml:"worker_count"`                     // Number of workers for processing files
+	QueueSize           int  `json:"queue_size" yaml:"queue_size"`                         // Size of the task queue
+	BatchWorkerCount    int  `json:"batch_worker_count" yaml:"batch_worker_count"`         // Number of workers for batch processing
+	MaxConcurrentLLM    int  `json:"max_concurrent_llm" yaml:"max_concurrent_llm"`         // Maximum concurrent LLM requests
+	MaxConcurrentAPI    int  `json:"max_concurrent_api" yaml:"max_concurrent_api"`         // Maximum concurrent API requests
+	MaxConcurrentFileOp int  `json:"max_concurrent_file_op" yaml:"max_concurrent_file_op"` // Maximum concurrent file operations
 }
 
 // NotificationConfig represents the notification configuration
@@ -218,6 +232,15 @@ Respond with a structured JSON array containing the media information and the ap
 			TVShowTemplate:  "{title} ({year})",
 			EpisodeTemplate: "{title} - S{season:02d}E{episode:02d} - {episode_title}",
 		},
+		WorkerPool: WorkerPoolConfig{
+			Enabled:             true,
+			WorkerCount:         4,
+			QueueSize:           100,
+			BatchWorkerCount:    2,
+			MaxConcurrentLLM:    2,
+			MaxConcurrentAPI:    5,
+			MaxConcurrentFileOp: 3,
+		},
 		Notification: NotificationConfig{
 			Enabled:        false,
 			Provider:       "telegram",
@@ -280,6 +303,29 @@ func applyEnvironmentOverrides(config *Config) {
 	}
 	if dbName := os.Getenv("DB_NAME"); dbName != "" {
 		config.Database.Database = dbName
+	}
+
+	// Worker pool settings
+	if workerCount := os.Getenv("WORKER_COUNT"); workerCount != "" {
+		var count int
+		fmt.Sscanf(workerCount, "%d", &count)
+		if count > 0 {
+			config.WorkerPool.WorkerCount = count
+		}
+	}
+	if batchWorkerCount := os.Getenv("BATCH_WORKER_COUNT"); batchWorkerCount != "" {
+		var count int
+		fmt.Sscanf(batchWorkerCount, "%d", &count)
+		if count > 0 {
+			config.WorkerPool.BatchWorkerCount = count
+		}
+	}
+	if maxConcurrentLLM := os.Getenv("MAX_CONCURRENT_LLM"); maxConcurrentLLM != "" {
+		var count int
+		fmt.Sscanf(maxConcurrentLLM, "%d", &count)
+		if count > 0 {
+			config.WorkerPool.MaxConcurrentLLM = count
+		}
 	}
 
 	// Notification settings
