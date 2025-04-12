@@ -3,7 +3,6 @@ package processor
 import (
 	"context"
 	"fmt"
-
 	"github.com/sleepstars/mediascanner/internal/models"
 	"github.com/sleepstars/mediascanner/internal/worker"
 )
