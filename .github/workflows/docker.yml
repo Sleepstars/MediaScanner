@@ -1,4 +1,4 @@
-name: Docker
+name: Docker Multi-Arch Build
 
 on:
   push:
@@ -11,9 +11,12 @@ permissions:
   contents: read
   packages: write
 
+env:
+  IMAGE_NAME: mediascanner
+
 jobs:
-  build-amd64:
-    name: Build AMD64 Image
+  build-and-push:
+    name: Build and Push Multi-Arch Image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -29,8 +32,7 @@ jobs:
           echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_ENV
           echo "Using repository owner: $REPO_OWNER"
 
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -41,7 +43,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ghcr.io/${{ env.REPO_OWNER }}/mediascanner
+          images: ghcr.io/${{ env.REPO_OWNER }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -49,109 +51,14 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
 
-      - name: Build and push AMD64 image
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  build-arm64:
-    name: Build ARM64 Image
-    runs-on: ubuntu-22.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set lowercase repository owner
-        id: lowercase
-        run: |
-          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_ENV
-          echo "Using repository owner: $REPO_OWNER"
-
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: ghcr.io/${{ env.REPO_OWNER }}/mediascanner
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
-      - name: Build and push ARM64 image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  create-manifest:
-    name: Create Multi-Arch Manifest
-    needs: [build-amd64, build-arm64]
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set lowercase repository owner
-        id: lowercase
-        run: |
-          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "REPO_OWNER=$REPO_OWNER" >> $GITHUB_ENV
-          echo "Using repository owner: $REPO_OWNER"
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: ghcr.io/${{ env.REPO_OWNER }}/mediascanner
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
-      - name: Create and push manifest
-        uses: Noelware/docker-manifest-action@0.4.3
-        with:
-          base-image: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:latest
-          extra-images: ghcr.io/${{ env.REPO_OWNER }}/mediascanner:amd64-${{ github.sha }},ghcr.io/${{ env.REPO_OWNER }}/mediascanner:arm64-${{ github.sha }}
-          push: true
-          amend: true
-          annotations: |
-            org.opencontainers.image.created=${{ steps.meta.outputs.labels['org.opencontainers.image.created'] }}
-            org.opencontainers.image.description=An intelligent media organization system powered by LLMs.
-            org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.title=MediaScanner
-            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+          provenance: false
