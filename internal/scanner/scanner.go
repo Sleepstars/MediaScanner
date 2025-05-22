@@ -17,11 +17,11 @@ import (
 // Scanner represents the media scanner
 type Scanner struct {
 	config *config.ScannerConfig
-	db     *database.Database
+	db     database.DatabaseInterface
 }
 
 // New creates a new scanner
-func New(cfg *config.ScannerConfig, db *database.Database) *Scanner {
+func New(cfg *config.ScannerConfig, db database.DatabaseInterface) *Scanner {
 	return &Scanner{
 		config: cfg,
 		db:     db,
