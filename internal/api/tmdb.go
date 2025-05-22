@@ -14,24 +14,60 @@ import (
 
 // TMDBClient represents the TMDB API client
 type TMDBClient struct {
-	client *tmdb.Client
+	client TMDBClientInterface
 	config *config.TMDBConfig
-	db     *database.Database
+	db     database.DatabaseInterface
+}
+
+// TMDBClientWrapper wraps the tmdb.Client to implement TMDBClientInterface
+type TMDBClientWrapper struct {
+	client *tmdb.Client
+}
+
+func (w *TMDBClientWrapper) GetSearchMovies(query string, options map[string]string) (*tmdb.SearchMovies, error) {
+	return w.client.GetSearchMovies(query, options)
+}
+
+func (w *TMDBClientWrapper) GetSearchTVShow(query string, options map[string]string) (*tmdb.SearchTVShows, error) {
+	return w.client.GetSearchTVShow(query, options)
+}
+
+func (w *TMDBClientWrapper) GetMovieDetails(id int, options map[string]string) (*tmdb.MovieDetails, error) {
+	return w.client.GetMovieDetails(id, options)
+}
+
+func (w *TMDBClientWrapper) GetTVDetails(id int, options map[string]string) (*tmdb.TVDetails, error) {
+	return w.client.GetTVDetails(id, options)
+}
+
+func (w *TMDBClientWrapper) GetTVSeasonDetails(id, seasonNumber int, options map[string]string) (*tmdb.TVSeasonDetails, error) {
+	return w.client.GetTVSeasonDetails(id, seasonNumber, options)
+}
+
+func (w *TMDBClientWrapper) GetTVEpisodeDetails(id, seasonNumber, episodeNumber int, options map[string]string) (*tmdb.TVEpisodeDetails, error) {
+	return w.client.GetTVEpisodeDetails(id, seasonNumber, episodeNumber, options)
+}
+
+func (w *TMDBClientWrapper) SetClientAutoRetry() {
+	w.client.SetClientAutoRetry()
 }
 
 // NewTMDBClient creates a new TMDB API client
-func NewTMDBClient(cfg *config.TMDBConfig, db *database.Database) (*TMDBClient, error) {
+func NewTMDBClient(cfg *config.TMDBConfig, db database.DatabaseInterface) (*TMDBClient, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("TMDB API key is required")
 	}
 
-	client, err := tmdb.Init(cfg.APIKey)
+	tmdbClient, err := tmdb.Init(cfg.APIKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize TMDB client: %w", err)
 	}
 
 	// Enable auto retry
-	client.SetClientAutoRetry()
+	tmdbClient.SetClientAutoRetry()
+
+	// Wrap the tmdb.Client in our wrapper
+	client := &TMDBClientWrapper{client: tmdbClient}
 
 	return &TMDBClient{
 		client: client,

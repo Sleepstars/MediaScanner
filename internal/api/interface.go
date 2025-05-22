@@ -2,7 +2,19 @@ package api
 
 import (
 	"context"
+	tmdb "github.com/cyruzin/golang-tmdb"
 )
+
+// TMDBClientInterface defines the interface for TMDB client operations
+type TMDBClientInterface interface {
+	GetSearchMovies(query string, options map[string]string) (*tmdb.SearchMovies, error)
+	GetSearchTVShow(query string, options map[string]string) (*tmdb.SearchTVShows, error)
+	GetMovieDetails(id int, options map[string]string) (*tmdb.MovieDetails, error)
+	GetTVDetails(id int, options map[string]string) (*tmdb.TVDetails, error)
+	GetTVSeasonDetails(id, seasonNumber int, options map[string]string) (*tmdb.TVSeasonDetails, error)
+	GetTVEpisodeDetails(id, seasonNumber, episodeNumber int, options map[string]string) (*tmdb.TVEpisodeDetails, error)
+	SetClientAutoRetry()
+}
 
 // APIInterface defines the interface for API operations
 type APIInterface interface {
