@@ -13,16 +13,37 @@ import (
 	"github.com/sleepstars/mediascanner/internal/worker"
 )
 
+// OpenAIClient is an interface for the OpenAI client
+type OpenAIClient interface {
+	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
+	CreateEmbedding(ctx context.Context, request openai.EmbeddingRequest) (openai.EmbeddingResponse, error)
+}
+
 // LLM represents the LLM client
 type LLM struct {
-	client      *openai.Client
+	client      OpenAIClient
 	config      *config.LLMConfig
 	functionMap map[string]FunctionHandler
 	semaphore   worker.Semaphore
+	provider    string
 }
 
 // FunctionHandler is a function that handles a function call from the LLM
 type FunctionHandler func(ctx context.Context, args json.RawMessage) (interface{}, error)
+
+// OpenAIClientWrapper wraps the openai.Client to implement OpenAIClient
+type OpenAIClientWrapper struct {
+	client *openai.Client
+}
+
+func (w *OpenAIClientWrapper) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+	return w.client.CreateChatCompletion(ctx, request)
+}
+
+func (w *OpenAIClientWrapper) CreateEmbedding(ctx context.Context, request openai.EmbeddingRequest) (openai.EmbeddingResponse, error) {
+	// This method is not used in the current implementation
+	return openai.EmbeddingResponse{}, nil
+}
 
 // New creates a new LLM client
 func New(cfg *config.LLMConfig, semaphore worker.Semaphore) (*LLM, error) {
@@ -30,16 +51,30 @@ func New(cfg *config.LLMConfig, semaphore worker.Semaphore) (*LLM, error) {
 		return nil, errors.New("LLM API key is required")
 	}
 
+	// Check for supported providers
+	if cfg.Provider != "" && cfg.Provider != "openai" {
+		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.Provider)
+	}
+
 	clientConfig := openai.DefaultConfig(cfg.APIKey)
 	if cfg.BaseURL != "" {
 		clientConfig.BaseURL = cfg.BaseURL
 	}
 
-	client := openai.NewClientWithConfig(clientConfig)
+	openaiClient := openai.NewClientWithConfig(clientConfig)
+
+	// Wrap the openai.Client in our wrapper
+	client := &OpenAIClientWrapper{client: openaiClient}
 
 	// If no semaphore is provided, use a no-op semaphore
 	if semaphore == nil {
 		semaphore = worker.NewNoOpSemaphore()
+	}
+
+	// Set the provider (default to "openai" if not specified)
+	provider := "openai"
+	if cfg.Provider != "" {
+		provider = cfg.Provider
 	}
 
 	return &LLM{
@@ -47,6 +82,7 @@ func New(cfg *config.LLMConfig, semaphore worker.Semaphore) (*LLM, error) {
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   semaphore,
+		provider:    provider,
 	}, nil
 }
 

@@ -16,11 +16,8 @@ type MockOpenAIClient struct {
 	CreateChatCompletionFunc func(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
-// OpenAIClient is an interface for the OpenAI client
-type OpenAIClient interface {
-	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
-	CreateEmbedding(ctx context.Context, request openai.EmbeddingRequest) (openai.EmbeddingResponse, error)
-}
+// Ensure MockOpenAIClient implements OpenAIClient
+var _ OpenAIClient = (*MockOpenAIClient)(nil)
 
 func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 	return m.CreateChatCompletionFunc(ctx, request)
@@ -106,9 +103,7 @@ func TestRegisterFunction(t *testing.T) {
 	llm, _ := New(cfg, nil)
 
 	// Register a function
-	handlerCalled := false
 	handler := func(ctx context.Context, args json.RawMessage) (interface{}, error) {
-		handlerCalled = true
 		return map[string]string{"result": "success"}, nil
 	}
 
