@@ -11,9 +11,53 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// GormDBInterface defines the interface for GORM DB operations
+type GormDBInterface interface {
+	Create(value interface{}) *gorm.DB
+	Save(value interface{}) *gorm.DB
+	First(dest interface{}, conds ...interface{}) *gorm.DB
+	Find(dest interface{}, conds ...interface{}) *gorm.DB
+	Where(query interface{}, args ...interface{}) *gorm.DB
+	AutoMigrate(dst ...interface{}) error
+	GetDB() *gorm.DB
+}
+
+// GormDBWrapper wraps a *gorm.DB to implement GormDBInterface
+type GormDBWrapper struct {
+	db *gorm.DB
+}
+
+func (w *GormDBWrapper) Create(value interface{}) *gorm.DB {
+	return w.db.Create(value)
+}
+
+func (w *GormDBWrapper) Save(value interface{}) *gorm.DB {
+	return w.db.Save(value)
+}
+
+func (w *GormDBWrapper) First(dest interface{}, conds ...interface{}) *gorm.DB {
+	return w.db.First(dest, conds...)
+}
+
+func (w *GormDBWrapper) Find(dest interface{}, conds ...interface{}) *gorm.DB {
+	return w.db.Find(dest, conds...)
+}
+
+func (w *GormDBWrapper) Where(query interface{}, args ...interface{}) *gorm.DB {
+	return w.db.Where(query, args...)
+}
+
+func (w *GormDBWrapper) AutoMigrate(dst ...interface{}) error {
+	return w.db.AutoMigrate(dst...)
+}
+
+func (w *GormDBWrapper) GetDB() *gorm.DB {
+	return w.db
+}
+
 // Database represents the database connection
 type Database struct {
-	db *gorm.DB
+	db GormDBInterface
 }
 
 // New creates a new database connection
@@ -31,7 +75,7 @@ func New(cfg *config.DatabaseConfig) (*Database, error) {
 	gormLogger := logger.Default
 
 	// Connect to the database
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: gormLogger,
 	})
 	if err != nil {
@@ -39,13 +83,16 @@ func New(cfg *config.DatabaseConfig) (*Database, error) {
 	}
 
 	// Configure connection pool
-	sqlDB, err := db.DB()
+	sqlDB, err := gormDB.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database connection: %w", err)
 	}
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetConnMaxLifetime(time.Hour)
+
+	// Wrap the gorm.DB in our wrapper
+	db := &GormDBWrapper{db: gormDB}
 
 	return &Database{db: db}, nil
 }
@@ -65,12 +112,13 @@ func (d *Database) Migrate() error {
 
 // GetDB returns the GORM database instance
 func (d *Database) GetDB() *gorm.DB {
-	return d.db
+	return d.db.GetDB()
 }
 
 // Close closes the database connection
 func (d *Database) Close() error {
-	sqlDB, err := d.db.DB()
+	gormDB := d.db.GetDB()
+	sqlDB, err := gormDB.DB()
 	if err != nil {
 		return err
 	}
