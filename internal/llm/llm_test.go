@@ -16,8 +16,18 @@ type MockOpenAIClient struct {
 	CreateChatCompletionFunc func(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
 }
 
+// OpenAIClient is an interface for the OpenAI client
+type OpenAIClient interface {
+	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
+	CreateEmbedding(ctx context.Context, request openai.EmbeddingRequest) (openai.EmbeddingResponse, error)
+}
+
 func (m *MockOpenAIClient) CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
 	return m.CreateChatCompletionFunc(ctx, request)
+}
+
+func (m *MockOpenAIClient) CreateEmbedding(ctx context.Context, request openai.EmbeddingRequest) (openai.EmbeddingResponse, error) {
+	return openai.EmbeddingResponse{}, nil
 }
 
 // MockSemaphore is a mock implementation of the worker.Semaphore interface
@@ -37,31 +47,50 @@ func (m *MockSemaphore) Release() {
 func TestNew(t *testing.T) {
 	// Test with valid config
 	cfg := &config.LLMConfig{
-		APIKey: "test-api-key",
-		Model:  "gpt-3.5-turbo",
+		Provider: "openai",
+		APIKey:   "test-api-key",
+		Model:    "gpt-3.5-turbo",
 	}
-	
+
 	llm, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("New failed with valid config: %v", err)
 	}
-	
+
 	if llm == nil {
 		t.Fatal("Expected non-nil LLM instance")
 	}
-	
+
 	// Test with empty API key
 	cfg = &config.LLMConfig{
-		APIKey: "",
-		Model:  "gpt-3.5-turbo",
+		Provider: "openai",
+		APIKey:   "",
+		Model:    "gpt-3.5-turbo",
 	}
-	
+
 	_, err = New(cfg, nil)
 	if err == nil {
 		t.Fatal("Expected error for empty API key, got nil")
 	}
-	
+
 	expectedError := "LLM API key is required"
+	if err.Error() != expectedError {
+		t.Errorf("Expected error message %q, got %q", expectedError, err.Error())
+	}
+
+	// Test with unsupported provider
+	cfg = &config.LLMConfig{
+		Provider: "unsupported",
+		APIKey:   "test-api-key",
+		Model:    "gpt-3.5-turbo",
+	}
+
+	_, err = New(cfg, nil)
+	if err == nil {
+		t.Fatal("Expected error for unsupported provider, got nil")
+	}
+
+	expectedError = "unsupported LLM provider: unsupported"
 	if err.Error() != expectedError {
 		t.Errorf("Expected error message %q, got %q", expectedError, err.Error())
 	}
@@ -69,21 +98,22 @@ func TestNew(t *testing.T) {
 
 func TestRegisterFunction(t *testing.T) {
 	cfg := &config.LLMConfig{
-		APIKey: "test-api-key",
-		Model:  "gpt-3.5-turbo",
+		Provider: "openai",
+		APIKey:   "test-api-key",
+		Model:    "gpt-3.5-turbo",
 	}
-	
+
 	llm, _ := New(cfg, nil)
-	
+
 	// Register a function
 	handlerCalled := false
 	handler := func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 		handlerCalled = true
 		return map[string]string{"result": "success"}, nil
 	}
-	
+
 	llm.RegisterFunction("testFunction", handler)
-	
+
 	// Verify the function was registered
 	if _, ok := llm.functionMap["testFunction"]; !ok {
 		t.Error("Function was not registered")
@@ -118,7 +148,7 @@ func TestProcessMediaFile(t *testing.T) {
 			}, nil
 		},
 	}
-	
+
 	// Create a mock semaphore
 	acquireCalled := false
 	releaseCalled := false
@@ -131,51 +161,53 @@ func TestProcessMediaFile(t *testing.T) {
 			releaseCalled = true
 		},
 	}
-	
+
 	// Create LLM with mocks
 	cfg := &config.LLMConfig{
+		Provider:     "openai",
 		APIKey:       "test-api-key",
 		Model:        "gpt-3.5-turbo",
 		SystemPrompt: "You are a helpful assistant that analyzes media filenames.",
 		MaxRetries:   3,
 	}
-	
+
 	llm := &LLM{
 		client:      mockClient,
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   mockSemaphore,
+		provider:    "openai",
 	}
-	
+
 	// Process a media file
 	filename := "The.Matrix.1999.1080p.BluRay.x264.mp4"
 	directoryStructure := map[string][]string{
-		"/movies": {"Action", "Sci-Fi", "Drama"},
+		"movies": {"Action", "Sci-Fi", "Drama"},
 	}
-	
+
 	result, err := llm.ProcessMediaFile(context.Background(), filename, directoryStructure)
 	if err != nil {
 		t.Fatalf("ProcessMediaFile failed: %v", err)
 	}
-	
+
 	// Verify semaphore was used
 	if !acquireCalled {
 		t.Error("Semaphore Acquire was not called")
 	}
-	
+
 	if !releaseCalled {
 		t.Error("Semaphore Release was not called")
 	}
-	
+
 	// Verify the result
 	if result.Title != "The Matrix" {
 		t.Errorf("Expected title to be 'The Matrix', got %q", result.Title)
 	}
-	
+
 	if result.Year != 1999 {
 		t.Errorf("Expected year to be 1999, got %d", result.Year)
 	}
-	
+
 	if result.MediaType != "movie" {
 		t.Errorf("Expected media type to be 'movie', got %q", result.MediaType)
 	}
@@ -188,7 +220,7 @@ func TestProcessMediaFile_Error(t *testing.T) {
 			return openai.ChatCompletionResponse{}, errors.New("API error")
 		},
 	}
-	
+
 	// Create a mock semaphore
 	mockSemaphore := &MockSemaphore{
 		AcquireFunc: func(ctx context.Context) error {
@@ -196,26 +228,28 @@ func TestProcessMediaFile_Error(t *testing.T) {
 		},
 		ReleaseFunc: func() {},
 	}
-	
+
 	// Create LLM with mocks
 	cfg := &config.LLMConfig{
+		Provider:     "openai",
 		APIKey:       "test-api-key",
 		Model:        "gpt-3.5-turbo",
 		SystemPrompt: "You are a helpful assistant that analyzes media filenames.",
 		MaxRetries:   0, // No retries for faster test
 	}
-	
+
 	llm := &LLM{
 		client:      mockClient,
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   mockSemaphore,
+		provider:    "openai",
 	}
-	
+
 	// Process a media file
 	filename := "The.Matrix.1999.1080p.BluRay.x264.mp4"
 	directoryStructure := map[string][]string{}
-	
+
 	_, err := llm.ProcessMediaFile(context.Background(), filename, directoryStructure)
 	if err == nil {
 		t.Fatal("Expected error, got nil")
@@ -244,7 +278,7 @@ func TestProcessMediaFile_FunctionCall(t *testing.T) {
 					},
 				}, nil
 			}
-			
+
 			// Second call returns the final result
 			return openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -269,7 +303,7 @@ func TestProcessMediaFile_FunctionCall(t *testing.T) {
 			}, nil
 		},
 	}
-	
+
 	// Create a mock semaphore
 	mockSemaphore := &MockSemaphore{
 		AcquireFunc: func(ctx context.Context) error {
@@ -277,51 +311,53 @@ func TestProcessMediaFile_FunctionCall(t *testing.T) {
 		},
 		ReleaseFunc: func() {},
 	}
-	
+
 	// Create LLM with mocks
 	cfg := &config.LLMConfig{
+		Provider:     "openai",
 		APIKey:       "test-api-key",
 		Model:        "gpt-3.5-turbo",
 		SystemPrompt: "You are a helpful assistant that analyzes media filenames.",
 		MaxRetries:   0,
 	}
-	
+
 	llm := &LLM{
 		client:      mockClient,
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   mockSemaphore,
+		provider:    "openai",
 	}
-	
+
 	// Register the function
 	functionCalled := false
 	llm.RegisterFunction("searchTMDB", func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 		functionCalled = true
-		
+
 		// Parse the arguments
 		var params struct {
 			Query     string `json:"query"`
 			Year      int    `json:"year"`
 			MediaType string `json:"mediaType"`
 		}
-		
+
 		if err := json.Unmarshal(args, &params); err != nil {
 			return nil, err
 		}
-		
+
 		// Verify the arguments
 		if params.Query != "The Matrix" {
 			t.Errorf("Expected query to be 'The Matrix', got %q", params.Query)
 		}
-		
+
 		if params.Year != 1999 {
 			t.Errorf("Expected year to be 1999, got %d", params.Year)
 		}
-		
+
 		if params.MediaType != "movie" {
 			t.Errorf("Expected media type to be 'movie', got %q", params.MediaType)
 		}
-		
+
 		// Return a mock result
 		return map[string]interface{}{
 			"movies": []map[string]interface{}{
@@ -335,21 +371,21 @@ func TestProcessMediaFile_FunctionCall(t *testing.T) {
 			},
 		}, nil
 	})
-	
+
 	// Process a media file
 	filename := "The.Matrix.1999.1080p.BluRay.x264.mp4"
 	directoryStructure := map[string][]string{}
-	
+
 	result, err := llm.ProcessMediaFile(context.Background(), filename, directoryStructure)
 	if err != nil {
 		t.Fatalf("ProcessMediaFile failed: %v", err)
 	}
-	
+
 	// Verify the function was called
 	if !functionCalled {
 		t.Error("Function was not called")
 	}
-	
+
 	// Verify the result
 	if result.Title != "The Matrix" {
 		t.Errorf("Expected title to be 'The Matrix', got %q", result.Title)
@@ -398,7 +434,7 @@ func TestProcessBatchFiles(t *testing.T) {
 			}, nil
 		},
 	}
-	
+
 	// Create a mock semaphore
 	mockSemaphore := &MockSemaphore{
 		AcquireFunc: func(ctx context.Context) error {
@@ -406,43 +442,45 @@ func TestProcessBatchFiles(t *testing.T) {
 		},
 		ReleaseFunc: func() {},
 	}
-	
+
 	// Create LLM with mocks
 	cfg := &config.LLMConfig{
-		APIKey:           "test-api-key",
-		Model:            "gpt-3.5-turbo",
+		Provider:          "openai",
+		APIKey:            "test-api-key",
+		Model:             "gpt-3.5-turbo",
 		BatchSystemPrompt: "You are a helpful assistant that analyzes batches of media filenames.",
-		MaxRetries:       0,
+		MaxRetries:        0,
 	}
-	
+
 	llm := &LLM{
 		client:      mockClient,
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   mockSemaphore,
+		provider:    "openai",
 	}
-	
+
 	// Process batch files
 	filenames := []string{
 		"The.Matrix.1999.1080p.BluRay.x264.mp4",
 		"The.Matrix.Reloaded.2003.1080p.BluRay.x264.mp4",
 	}
 	directoryStructure := map[string][]string{}
-	
+
 	results, err := llm.ProcessBatchFiles(context.Background(), filenames, directoryStructure)
 	if err != nil {
 		t.Fatalf("ProcessBatchFiles failed: %v", err)
 	}
-	
+
 	// Verify the results
 	if len(results) != 2 {
 		t.Fatalf("Expected 2 results, got %d", len(results))
 	}
-	
+
 	if results[0].Title != "The Matrix" {
 		t.Errorf("Expected first title to be 'The Matrix', got %q", results[0].Title)
 	}
-	
+
 	if results[1].Title != "The Matrix Reloaded" {
 		t.Errorf("Expected second title to be 'The Matrix Reloaded', got %q", results[1].Title)
 	}
@@ -456,34 +494,36 @@ func TestProcessBatchFiles_SemaphoreError(t *testing.T) {
 		},
 		ReleaseFunc: func() {},
 	}
-	
+
 	// Create LLM with mocks
 	cfg := &config.LLMConfig{
-		APIKey:           "test-api-key",
-		Model:            "gpt-3.5-turbo",
+		Provider:          "openai",
+		APIKey:            "test-api-key",
+		Model:             "gpt-3.5-turbo",
 		BatchSystemPrompt: "You are a helpful assistant that analyzes batches of media filenames.",
-		MaxRetries:       0,
+		MaxRetries:        0,
 	}
-	
+
 	llm := &LLM{
 		client:      nil, // Not used in this test
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   mockSemaphore,
+		provider:    "openai",
 	}
-	
+
 	// Process batch files
 	filenames := []string{
 		"The.Matrix.1999.1080p.BluRay.x264.mp4",
 		"The.Matrix.Reloaded.2003.1080p.BluRay.x264.mp4",
 	}
 	directoryStructure := map[string][]string{}
-	
+
 	_, err := llm.ProcessBatchFiles(context.Background(), filenames, directoryStructure)
 	if err == nil {
 		t.Fatal("Expected error, got nil")
 	}
-	
+
 	expectedError := "failed to acquire LLM semaphore: semaphore error"
 	if err.Error() != expectedError {
 		t.Errorf("Expected error message %q, got %q", expectedError, err.Error())
@@ -499,7 +539,7 @@ func TestProcessBatchFiles_NoSystemPrompt(t *testing.T) {
 			if request.Messages[0].Content != expectedPrompt {
 				t.Errorf("Expected system prompt %q, got %q", expectedPrompt, request.Messages[0].Content)
 			}
-			
+
 			// Return a valid response
 			return openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
@@ -513,29 +553,31 @@ func TestProcessBatchFiles_NoSystemPrompt(t *testing.T) {
 			}, nil
 		},
 	}
-	
+
 	// Create a mock semaphore
 	mockSemaphore := worker.NewNoOpSemaphore()
-	
+
 	// Create LLM with mocks
 	cfg := &config.LLMConfig{
+		Provider:     "openai",
 		APIKey:       "test-api-key",
 		Model:        "gpt-3.5-turbo",
 		SystemPrompt: "You are a helpful assistant that analyzes the given filename.",
 		MaxRetries:   0,
 	}
-	
+
 	llm := &LLM{
 		client:      mockClient,
 		config:      cfg,
 		functionMap: make(map[string]FunctionHandler),
 		semaphore:   mockSemaphore,
+		provider:    "openai",
 	}
-	
+
 	// Process batch files
 	filenames := []string{"The.Matrix.1999.1080p.BluRay.x264.mp4"}
 	directoryStructure := map[string][]string{}
-	
+
 	_, err := llm.ProcessBatchFiles(context.Background(), filenames, directoryStructure)
 	if err != nil {
 		t.Fatalf("ProcessBatchFiles failed: %v", err)
