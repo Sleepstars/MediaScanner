@@ -2,29 +2,35 @@ package scanner
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/sleepstars/mediascanner/internal/config"
 	"github.com/sleepstars/mediascanner/internal/database"
+	"github.com/sleepstars/mediascanner/internal/fsnotify"
 	"github.com/sleepstars/mediascanner/internal/models"
 )
 
 // Scanner represents the media scanner
 type Scanner struct {
-	config *config.ScannerConfig
-	db     *database.Database
+	config   *config.ScannerConfig
+	db       *database.Database
+	watcher  *fsnotify.Watcher
+	watching bool
+	mu       sync.RWMutex
 }
 
 // New creates a new scanner
 func New(cfg *config.ScannerConfig, db *database.Database) *Scanner {
 	return &Scanner{
-		config: cfg,
-		db:     db,
+		config:   cfg,
+		db:       db,
+		watching: false,
 	}
 }
 
@@ -130,6 +136,124 @@ func (s *Scanner) Scan() (*ScanResult, error) {
 	}
 
 	return result, nil
+}
+
+// StartWatching starts watching the media directories for changes
+func (s *Scanner) StartWatching() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.watching {
+		return fmt.Errorf("already watching")
+	}
+
+	// Create a new watcher
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	s.watcher = watcher
+
+	// Add handler for file events
+	s.watcher.AddHandler(s.handleFileEvent)
+
+	// Add media directories to the watcher
+	for _, mediaDir := range s.config.MediaDirs {
+		if err := s.watcher.AddDirectory(mediaDir); err != nil {
+			log.Error().Err(err).Str("directory", mediaDir).Msg("Failed to add directory to watcher")
+		} else {
+			log.Debug().Str("directory", mediaDir).Msg("Directory added to watcher")
+		}
+	}
+
+	s.watching = true
+	log.Info().Int("directory_count", len(s.config.MediaDirs)).Msg("File system watcher started")
+	return nil
+}
+
+// StopWatching stops watching the media directories for changes
+func (s *Scanner) StopWatching() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.watching {
+		return fmt.Errorf("not watching")
+	}
+
+	if err := s.watcher.Close(); err != nil {
+		return fmt.Errorf("failed to close watcher: %w", err)
+	}
+
+	s.watching = false
+	s.watcher = nil
+	log.Printf("Stopped watching media directories")
+	return nil
+}
+
+// IsWatching returns whether the scanner is watching for changes
+func (s *Scanner) IsWatching() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.watching
+}
+
+// handleFileEvent handles a file system event
+func (s *Scanner) handleFileEvent(event fsnotify.Event) {
+	// Only process create and modify events
+	if event.Type != fsnotify.EventCreate && event.Type != fsnotify.EventModify {
+		return
+	}
+
+	// Check if the file is a directory
+	info, err := os.Stat(event.Path)
+	if err != nil {
+		log.Printf("Error getting file info for %q: %v", event.Path, err)
+		return
+	}
+	if info.IsDir() {
+		return
+	}
+
+	// Check if the file is a video file
+	ext := strings.ToLower(filepath.Ext(event.Path))
+	isVideoFile := false
+	for _, videoExt := range s.config.VideoExtensions {
+		if ext == strings.ToLower(videoExt) {
+			isVideoFile = true
+			break
+		}
+	}
+	if !isVideoFile {
+		return
+	}
+
+	// Check if the file matches any exclude patterns
+	fileName := filepath.Base(event.Path)
+	for _, pattern := range s.config.ExcludePatterns {
+		re, err := regexp.Compile("(?i)" + pattern)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(fileName) {
+			return
+		}
+	}
+
+	// Check if the file is already in the database
+	_, err = s.db.GetMediaFileByPath(event.Path)
+	if err == nil {
+		// File is already in the database
+		return
+	}
+
+	// Create a media file record
+	_, err = s.CreateMediaFile(event.Path)
+	if err != nil {
+		log.Error().Err(err).Str("file", event.Path).Msg("Failed to create media file record")
+		return
+	}
+
+	log.Info().Str("file", event.Path).Msg("New file detected and added")
 }
 
 // CreateMediaFile creates a new media file record in the database

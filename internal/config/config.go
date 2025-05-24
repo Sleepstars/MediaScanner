@@ -11,8 +11,9 @@ import (
 // Config represents the application configuration
 type Config struct {
 	// General settings
-	LogLevel     string `json:"log_level" yaml:"log_level"`
-	ScanInterval int    `json:"scan_interval" yaml:"scan_interval"` // in minutes
+	LogLevel     string       `json:"log_level" yaml:"log_level"` // Deprecated: use Logger.Level instead
+	Logger       LoggerConfig `json:"logger" yaml:"logger"`
+	ScanInterval int          `json:"scan_interval" yaml:"scan_interval"` // in minutes
 
 	// LLM settings
 	LLM LLMConfig `json:"llm" yaml:"llm"`
@@ -53,6 +54,12 @@ type APIConfig struct {
 	TMDB    TMDBConfig    `json:"tmdb" yaml:"tmdb"`
 	TVDB    TVDBConfig    `json:"tvdb" yaml:"tvdb"`
 	Bangumi BangumiConfig `json:"bangumi" yaml:"bangumi"`
+
+	// Rate limiting settings
+	RateLimiting RateLimitingConfig `json:"rate_limiting" yaml:"rate_limiting"`
+
+	// Cache settings
+	Cache CacheConfig `json:"cache" yaml:"cache"`
 }
 
 // TMDBConfig represents the TMDB API configuration
@@ -75,6 +82,30 @@ type BangumiConfig struct {
 	UserAgent string `json:"user_agent" yaml:"user_agent"`
 }
 
+// RateLimitingConfig represents the rate limiting configuration
+type RateLimitingConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// Rate limits for each provider (requests per second)
+	TMDB    float64 `json:"tmdb" yaml:"tmdb"`
+	TVDB    float64 `json:"tvdb" yaml:"tvdb"`
+	Bangumi float64 `json:"bangumi" yaml:"bangumi"`
+
+	// Burst sizes for each provider
+	TMDBBurst    int `json:"tmdb_burst" yaml:"tmdb_burst"`
+	TVDBBurst    int `json:"tvdb_burst" yaml:"tvdb_burst"`
+	BangumiBurst int `json:"bangumi_burst" yaml:"bangumi_burst"`
+}
+
+// CacheConfig represents the cache configuration
+type CacheConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// TTL (time to live) for each type of cache entry (in hours)
+	SearchTTL  int `json:"search_ttl" yaml:"search_ttl"`   // For search results
+	DetailsTTL int `json:"details_ttl" yaml:"details_ttl"` // For detailed information
+}
+
 // DatabaseConfig represents the database configuration
 type DatabaseConfig struct {
 	Type     string `json:"type" yaml:"type"` // postgres
@@ -93,6 +124,20 @@ type ScannerConfig struct {
 	ExcludePatterns []string `json:"exclude_patterns" yaml:"exclude_patterns"`
 	VideoExtensions []string `json:"video_extensions" yaml:"video_extensions"`
 	BatchThreshold  int      `json:"batch_threshold" yaml:"batch_threshold"`
+	ScanInterval    int      `json:"scan_interval" yaml:"scan_interval"`
+
+	// File system monitoring settings
+	UseWatcher      bool            `json:"use_watcher" yaml:"use_watcher"`
+	WatcherSettings WatcherSettings `json:"watcher_settings" yaml:"watcher_settings"`
+}
+
+// WatcherSettings represents the file system watcher settings
+type WatcherSettings struct {
+	// Whether to watch subdirectories recursively
+	Recursive bool `json:"recursive" yaml:"recursive"`
+
+	// Delay in seconds before processing a new file (to avoid processing files that are still being written)
+	ProcessDelay int `json:"process_delay" yaml:"process_delay"`
 }
 
 // FileOpsConfig represents the file operations configuration
@@ -123,6 +168,33 @@ type NotificationConfig struct {
 	TelegramToken  string `json:"telegram_token" yaml:"telegram_token"`
 	SuccessChannel string `json:"success_channel" yaml:"success_channel"`
 	ErrorGroup     string `json:"error_group" yaml:"error_group"`
+}
+
+// LoggerConfig represents the logger configuration
+type LoggerConfig struct {
+	// Level is the log level (debug, info, warn, error, fatal)
+	Level string `json:"level" yaml:"level"`
+
+	// Format is the log format (json, console)
+	Format string `json:"format" yaml:"format"`
+
+	// Output is the log output (stdout, stderr, file)
+	Output string `json:"output" yaml:"output"`
+
+	// File is the log file path (only used if Output is "file")
+	File string `json:"file" yaml:"file"`
+
+	// MaxSize is the maximum size in megabytes of the log file before it gets rotated
+	MaxSize int `json:"max_size" yaml:"max_size"`
+
+	// MaxBackups is the maximum number of old log files to retain
+	MaxBackups int `json:"max_backups" yaml:"max_backups"`
+
+	// MaxAge is the maximum number of days to retain old log files
+	MaxAge int `json:"max_age" yaml:"max_age"`
+
+	// Compress determines if the rotated log files should be compressed
+	Compress bool `json:"compress" yaml:"compress"`
 }
 
 // LoadConfig loads the configuration from a file
@@ -159,7 +231,17 @@ func LoadConfig(filePath string) (*Config, error) {
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		LogLevel:     "info",
+		LogLevel: "info", // Deprecated: use Logger.Level instead
+		Logger: LoggerConfig{
+			Level:      "info",
+			Format:     "json",
+			Output:     "stdout",
+			File:       "logs/mediascanner.log",
+			MaxSize:    100, // 100 MB
+			MaxBackups: 3,
+			MaxAge:     28, // 28 days
+			Compress:   true,
+		},
 		ScanInterval: 5, // 5 minutes
 		LLM: LLMConfig{
 			Provider: "openai",
@@ -204,6 +286,20 @@ Respond with a structured JSON array containing the media information and the ap
 				Language:  "zh-CN",
 				UserAgent: "sleepstars/MediaScanner (https://github.com/sleepstars/MediaScanner)",
 			},
+			RateLimiting: RateLimitingConfig{
+				Enabled:      true,
+				TMDB:         5.0, // 5 requests per second
+				TVDB:         2.0, // 2 requests per second
+				Bangumi:      1.0, // 1 request per second
+				TMDBBurst:    10,  // Burst of 10 requests
+				TVDBBurst:    5,   // Burst of 5 requests
+				BangumiBurst: 3,   // Burst of 3 requests
+			},
+			Cache: CacheConfig{
+				Enabled:    true,
+				SearchTTL:  24,     // Cache search results for 24 hours
+				DetailsTTL: 7 * 24, // Cache details for 7 days
+			},
 		},
 		Database: DatabaseConfig{
 			Type:     "postgres",
@@ -220,6 +316,12 @@ Respond with a structured JSON array containing the media information and the ap
 			ExcludePatterns: []string{"sample", "trailer", "extra", "featurette"},
 			VideoExtensions: []string{".mkv", ".mp4", ".avi", ".ts", ".mov", ".wmv"},
 			BatchThreshold:  50,
+			ScanInterval:    5, // 5 minutes
+			UseWatcher:      true,
+			WatcherSettings: WatcherSettings{
+				Recursive:    true,
+				ProcessDelay: 30, // 30 seconds
+			},
 		},
 		FileOps: FileOpsConfig{
 			Mode:            "copy",
@@ -253,6 +355,46 @@ Respond with a structured JSON array containing the media information and the ap
 
 // applyEnvironmentOverrides applies environment variable overrides to the configuration
 func applyEnvironmentOverrides(config *Config) {
+	// Logger settings
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		config.Logger.Level = logLevel
+		// Also set the deprecated LogLevel for backward compatibility
+		config.LogLevel = logLevel
+	}
+	if logFormat := os.Getenv("LOG_FORMAT"); logFormat != "" {
+		config.Logger.Format = logFormat
+	}
+	if logOutput := os.Getenv("LOG_OUTPUT"); logOutput != "" {
+		config.Logger.Output = logOutput
+	}
+	if logFile := os.Getenv("LOG_FILE"); logFile != "" {
+		config.Logger.File = logFile
+	}
+	if logMaxSize := os.Getenv("LOG_MAX_SIZE"); logMaxSize != "" {
+		var maxSize int
+		fmt.Sscanf(logMaxSize, "%d", &maxSize)
+		if maxSize > 0 {
+			config.Logger.MaxSize = maxSize
+		}
+	}
+	if logMaxBackups := os.Getenv("LOG_MAX_BACKUPS"); logMaxBackups != "" {
+		var maxBackups int
+		fmt.Sscanf(logMaxBackups, "%d", &maxBackups)
+		if maxBackups > 0 {
+			config.Logger.MaxBackups = maxBackups
+		}
+	}
+	if logMaxAge := os.Getenv("LOG_MAX_AGE"); logMaxAge != "" {
+		var maxAge int
+		fmt.Sscanf(logMaxAge, "%d", &maxAge)
+		if maxAge > 0 {
+			config.Logger.MaxAge = maxAge
+		}
+	}
+	if logCompress := os.Getenv("LOG_COMPRESS"); logCompress != "" {
+		config.Logger.Compress = logCompress == "true"
+	}
+
 	// LLM settings
 	if apiKey := os.Getenv("LLM_API_KEY"); apiKey != "" {
 		config.LLM.APIKey = apiKey
@@ -282,6 +424,51 @@ func applyEnvironmentOverrides(config *Config) {
 	}
 	if bangumiUserAgent := os.Getenv("BANGUMI_USER_AGENT"); bangumiUserAgent != "" {
 		config.APIs.Bangumi.UserAgent = bangumiUserAgent
+	}
+
+	// Rate limiting settings
+	if rateLimitingEnabled := os.Getenv("RATE_LIMITING_ENABLED"); rateLimitingEnabled != "" {
+		config.APIs.RateLimiting.Enabled = rateLimitingEnabled == "true"
+	}
+	if tmdbRateLimit := os.Getenv("TMDB_RATE_LIMIT"); tmdbRateLimit != "" {
+		var rate float64
+		fmt.Sscanf(tmdbRateLimit, "%f", &rate)
+		if rate > 0 {
+			config.APIs.RateLimiting.TMDB = rate
+		}
+	}
+	if tvdbRateLimit := os.Getenv("TVDB_RATE_LIMIT"); tvdbRateLimit != "" {
+		var rate float64
+		fmt.Sscanf(tvdbRateLimit, "%f", &rate)
+		if rate > 0 {
+			config.APIs.RateLimiting.TVDB = rate
+		}
+	}
+	if bangumiRateLimit := os.Getenv("BANGUMI_RATE_LIMIT"); bangumiRateLimit != "" {
+		var rate float64
+		fmt.Sscanf(bangumiRateLimit, "%f", &rate)
+		if rate > 0 {
+			config.APIs.RateLimiting.Bangumi = rate
+		}
+	}
+
+	// Cache settings
+	if cacheEnabled := os.Getenv("CACHE_ENABLED"); cacheEnabled != "" {
+		config.APIs.Cache.Enabled = cacheEnabled == "true"
+	}
+	if searchTTL := os.Getenv("CACHE_SEARCH_TTL"); searchTTL != "" {
+		var ttl int
+		fmt.Sscanf(searchTTL, "%d", &ttl)
+		if ttl > 0 {
+			config.APIs.Cache.SearchTTL = ttl
+		}
+	}
+	if detailsTTL := os.Getenv("CACHE_DETAILS_TTL"); detailsTTL != "" {
+		var ttl int
+		fmt.Sscanf(detailsTTL, "%d", &ttl)
+		if ttl > 0 {
+			config.APIs.Cache.DetailsTTL = ttl
+		}
 	}
 
 	// Database settings

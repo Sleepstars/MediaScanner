@@ -8,7 +8,7 @@ import (
 type Semaphore interface {
 	// Acquire acquires the semaphore
 	Acquire(ctx context.Context) error
-	
+
 	// Release releases the semaphore
 	Release()
 }
@@ -31,6 +31,37 @@ func NewNoOpSemaphore() Semaphore {
 	return &NoOpSemaphore{}
 }
 
+// ChannelSemaphore is a simple channel-based semaphore implementation
+type ChannelSemaphore struct {
+	ch chan struct{}
+}
+
+// Acquire acquires the semaphore
+func (s *ChannelSemaphore) Acquire(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case s.ch <- struct{}{}:
+		return nil
+	}
+}
+
+// Release releases the semaphore
+func (s *ChannelSemaphore) Release() {
+	select {
+	case <-s.ch:
+	default:
+		// This should not happen in normal operation
+	}
+}
+
+// NewChannelSemaphore creates a new channel-based semaphore
+func NewChannelSemaphore(capacity int) Semaphore {
+	return &ChannelSemaphore{
+		ch: make(chan struct{}, capacity),
+	}
+}
+
 // LLMSemaphore is a wrapper for the LLM semaphore
 type LLMSemaphore struct {
 	pool *Pool
@@ -38,12 +69,17 @@ type LLMSemaphore struct {
 
 // Acquire acquires the LLM semaphore
 func (s *LLMSemaphore) Acquire(ctx context.Context) error {
+	if s.pool == nil {
+		return nil // No-op if pool is nil
+	}
 	return s.pool.AcquireLLMSemaphore(ctx)
 }
 
 // Release releases the LLM semaphore
 func (s *LLMSemaphore) Release() {
-	s.pool.ReleaseLLMSemaphore()
+	if s.pool != nil {
+		s.pool.ReleaseLLMSemaphore()
+	}
 }
 
 // NewLLMSemaphore creates a new LLM semaphore
@@ -58,12 +94,17 @@ type APISemaphore struct {
 
 // Acquire acquires the API semaphore
 func (s *APISemaphore) Acquire(ctx context.Context) error {
+	if s.pool == nil {
+		return nil // No-op if pool is nil
+	}
 	return s.pool.AcquireAPISemaphore(ctx)
 }
 
 // Release releases the API semaphore
 func (s *APISemaphore) Release() {
-	s.pool.ReleaseAPISemaphore()
+	if s.pool != nil {
+		s.pool.ReleaseAPISemaphore()
+	}
 }
 
 // NewAPISemaphore creates a new API semaphore
@@ -78,12 +119,17 @@ type FileOpSemaphore struct {
 
 // Acquire acquires the file operation semaphore
 func (s *FileOpSemaphore) Acquire(ctx context.Context) error {
+	if s.pool == nil {
+		return nil // No-op if pool is nil
+	}
 	return s.pool.AcquireFileOpSemaphore(ctx)
 }
 
 // Release releases the file operation semaphore
 func (s *FileOpSemaphore) Release() {
-	s.pool.ReleaseFileOpSemaphore()
+	if s.pool != nil {
+		s.pool.ReleaseFileOpSemaphore()
+	}
 }
 
 // NewFileOpSemaphore creates a new file operation semaphore

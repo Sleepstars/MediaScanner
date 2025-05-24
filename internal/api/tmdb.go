@@ -10,17 +10,20 @@ import (
 	"github.com/sleepstars/mediascanner/internal/config"
 	"github.com/sleepstars/mediascanner/internal/database"
 	"github.com/sleepstars/mediascanner/internal/models"
+	"github.com/sleepstars/mediascanner/internal/ratelimiter"
 )
 
 // TMDBClient represents the TMDB API client
 type TMDBClient struct {
-	client *tmdb.Client
-	config *config.TMDBConfig
-	db     *database.Database
+	client      *tmdb.Client
+	config      *config.TMDBConfig
+	db          *database.Database
+	rateLimiter *ratelimiter.ProviderRateLimiter
+	cacheConfig *config.CacheConfig
 }
 
 // NewTMDBClient creates a new TMDB API client
-func NewTMDBClient(cfg *config.TMDBConfig, db *database.Database) (*TMDBClient, error) {
+func NewTMDBClient(cfg *config.TMDBConfig, db *database.Database, rateLimiter *ratelimiter.ProviderRateLimiter, cacheConfig *config.CacheConfig) (*TMDBClient, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("TMDB API key is required")
 	}
@@ -34,26 +37,38 @@ func NewTMDBClient(cfg *config.TMDBConfig, db *database.Database) (*TMDBClient, 
 	client.SetClientAutoRetry()
 
 	return &TMDBClient{
-		client: client,
-		config: cfg,
-		db:     db,
+		client:      client,
+		config:      cfg,
+		db:          db,
+		rateLimiter: rateLimiter,
+		cacheConfig: cacheConfig,
 	}, nil
 }
 
 // SearchMovie searches for a movie
 func (c *TMDBClient) SearchMovie(ctx context.Context, query string, year int) (*MovieSearchResult, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("movie:%s:%d", query, year)
-	cache, err := c.db.GetAPICache("tmdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result MovieSearchResult
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("movie:%s:%d", query, year)
+		cache, err := c.db.GetAPICache("tmdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result MovieSearchResult
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tmdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	options := map[string]string{
 		"language": c.config.Language,
 	}
@@ -99,16 +114,24 @@ func (c *TMDBClient) SearchMovie(ctx context.Context, query string, year int) (*
 		})
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tmdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(24 * time.Hour), // Cache for 24 hours
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.SearchTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 24 * time.Hour // Default to 24 hours if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tmdb",
+				Query:     fmt.Sprintf("movie:%s:%d", query, year),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -116,18 +139,28 @@ func (c *TMDBClient) SearchMovie(ctx context.Context, query string, year int) (*
 
 // SearchTV searches for a TV show
 func (c *TMDBClient) SearchTV(ctx context.Context, query string, year int) (*TVSearchResult, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("tv:%s:%d", query, year)
-	cache, err := c.db.GetAPICache("tmdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result TVSearchResult
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("tv:%s:%d", query, year)
+		cache, err := c.db.GetAPICache("tmdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result TVSearchResult
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tmdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	options := map[string]string{
 		"language": c.config.Language,
 	}
@@ -173,16 +206,24 @@ func (c *TMDBClient) SearchTV(ctx context.Context, query string, year int) (*TVS
 		})
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tmdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(24 * time.Hour), // Cache for 24 hours
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.SearchTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 24 * time.Hour // Default to 24 hours if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tmdb",
+				Query:     fmt.Sprintf("tv:%s:%d", query, year),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -190,18 +231,28 @@ func (c *TMDBClient) SearchTV(ctx context.Context, query string, year int) (*TVS
 
 // GetMovieDetails gets details for a movie
 func (c *TMDBClient) GetMovieDetails(ctx context.Context, id int) (*MovieDetails, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("movie_details:%d", id)
-	cache, err := c.db.GetAPICache("tmdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result MovieDetails
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("movie_details:%d", id)
+		cache, err := c.db.GetAPICache("tmdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result MovieDetails
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tmdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	options := map[string]string{
 		"language":           c.config.Language,
 		"append_to_response": "credits,images,external_ids",
@@ -258,16 +309,24 @@ func (c *TMDBClient) GetMovieDetails(ctx context.Context, id int) (*MovieDetails
 		VoteCount:   movie.VoteCount,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tmdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tmdb",
+				Query:     fmt.Sprintf("movie_details:%d", id),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -275,18 +334,28 @@ func (c *TMDBClient) GetMovieDetails(ctx context.Context, id int) (*MovieDetails
 
 // GetTVDetails gets details for a TV show
 func (c *TMDBClient) GetTVDetails(ctx context.Context, id int) (*TVDetails, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("tv_details:%d", id)
-	cache, err := c.db.GetAPICache("tmdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result TVDetails
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("tv_details:%d", id)
+		cache, err := c.db.GetAPICache("tmdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result TVDetails
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tmdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	options := map[string]string{
 		"language":           c.config.Language,
 		"append_to_response": "credits,images,external_ids",
@@ -344,16 +413,24 @@ func (c *TMDBClient) GetTVDetails(ctx context.Context, id int) (*TVDetails, erro
 		VoteCount:       tv.VoteCount,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tmdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tmdb",
+				Query:     fmt.Sprintf("tv_details:%d", id),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -361,18 +438,28 @@ func (c *TMDBClient) GetTVDetails(ctx context.Context, id int) (*TVDetails, erro
 
 // GetSeasonDetails gets details for a TV show season
 func (c *TMDBClient) GetSeasonDetails(ctx context.Context, tvID, seasonNumber int) (*SeasonDetails, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("season_details:%d:%d", tvID, seasonNumber)
-	cache, err := c.db.GetAPICache("tmdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result SeasonDetails
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("season_details:%d:%d", tvID, seasonNumber)
+		cache, err := c.db.GetAPICache("tmdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result SeasonDetails
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tmdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	options := map[string]string{
 		"language": c.config.Language,
 	}
@@ -408,16 +495,24 @@ func (c *TMDBClient) GetSeasonDetails(ctx context.Context, tvID, seasonNumber in
 		Episodes:     episodes,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tmdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tmdb",
+				Query:     fmt.Sprintf("season_details:%d:%d", tvID, seasonNumber),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -425,18 +520,28 @@ func (c *TMDBClient) GetSeasonDetails(ctx context.Context, tvID, seasonNumber in
 
 // GetEpisodeDetails gets details for a TV show episode
 func (c *TMDBClient) GetEpisodeDetails(ctx context.Context, tvID, seasonNumber, episodeNumber int) (*EpisodeDetails, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("episode_details:%d:%d:%d", tvID, seasonNumber, episodeNumber)
-	cache, err := c.db.GetAPICache("tmdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result EpisodeDetails
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("episode_details:%d:%d:%d", tvID, seasonNumber, episodeNumber)
+		cache, err := c.db.GetAPICache("tmdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result EpisodeDetails
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tmdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	options := map[string]string{
 		"language": c.config.Language,
 	}
@@ -458,16 +563,24 @@ func (c *TMDBClient) GetEpisodeDetails(ctx context.Context, tvID, seasonNumber, 
 		VoteAverage:   episode.VoteAverage,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tmdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tmdb",
+				Query:     fmt.Sprintf("episode_details:%d:%d:%d", tvID, seasonNumber, episodeNumber),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil

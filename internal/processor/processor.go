@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/sleepstars/mediascanner/internal/api"
 	"github.com/sleepstars/mediascanner/internal/config"
 	"github.com/sleepstars/mediascanner/internal/database"
@@ -51,9 +51,38 @@ func New(cfg *config.Config, db *database.Database, llmClient *llm.LLM, apiClien
 	return p
 }
 
+// handleProcessingError is a helper function to handle processing errors consistently
+func (p *Processor) handleProcessingError(mediaFile *models.MediaFile, err error, operation string) error {
+	errorMsg := fmt.Sprintf("%s error: %v", operation, err)
+
+	// Update media file status
+	mediaFile.Status = "failed"
+	mediaFile.ErrorMessage = errorMsg
+	mediaFile.UpdatedAt = time.Now()
+
+	// Log the error
+	log.Error().
+		Err(err).
+		Str("operation", operation).
+		Str("file", mediaFile.OriginalPath).
+		Msg("Processing failed")
+
+	// Update database
+	if dbErr := p.db.UpdateMediaFile(mediaFile); dbErr != nil {
+		log.Error().Err(dbErr).Str("file", mediaFile.OriginalPath).Msg("Failed to update media file status")
+	}
+
+	// Create error notification
+	if notifErr := p.createErrorNotification(mediaFile, errorMsg); notifErr != nil {
+		log.Error().Err(notifErr).Str("file", mediaFile.OriginalPath).Msg("Failed to create error notification")
+	}
+
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
 // ProcessMediaFile processes a media file
 func (p *Processor) ProcessMediaFile(ctx context.Context, mediaFile *models.MediaFile) error {
-	log.Printf("Processing media file: %s", mediaFile.OriginalPath)
+	log.Info().Str("file", mediaFile.OriginalPath).Msg("Starting media file processing")
 
 	// Update status to processing
 	mediaFile.Status = "processing"
@@ -68,16 +97,7 @@ func (p *Processor) ProcessMediaFile(ctx context.Context, mediaFile *models.Medi
 	// Process the file with LLM
 	result, err := p.llmClient.ProcessMediaFile(ctx, mediaFile.OriginalName, p.config.FileOps.DirectoryStructure)
 	if err != nil {
-		// Update status to failed
-		mediaFile.Status = "failed"
-		mediaFile.ErrorMessage = fmt.Sprintf("LLM processing error: %v", err)
-		mediaFile.UpdatedAt = time.Now()
-		_ = p.db.UpdateMediaFile(mediaFile)
-
-		// Create notification
-		_ = p.createErrorNotification(mediaFile, fmt.Sprintf("LLM processing error: %v", err))
-
-		return fmt.Errorf("error processing media file with LLM: %w", err)
+		return p.handleProcessingError(mediaFile, err, "LLM processing")
 	}
 
 	// Create media info record
@@ -99,51 +119,24 @@ func (p *Processor) ProcessMediaFile(ctx context.Context, mediaFile *models.Medi
 	}
 
 	if err := p.db.CreateMediaInfo(mediaInfo); err != nil {
-		// Update status to failed
-		mediaFile.Status = "failed"
-		mediaFile.ErrorMessage = fmt.Sprintf("Error creating media info record: %v", err)
-		mediaFile.UpdatedAt = time.Now()
-		_ = p.db.UpdateMediaFile(mediaFile)
-
-		// Create notification
-		_ = p.createErrorNotification(mediaFile, fmt.Sprintf("Error creating media info record: %v", err))
-
-		return fmt.Errorf("error creating media info record: %w", err)
+		return p.handleProcessingError(mediaFile, err, "Creating media info record")
 	}
 
 	// Fetch additional metadata
 	if err := p.fetchAdditionalMetadata(ctx, mediaInfo); err != nil {
-		log.Printf("Warning: Error fetching additional metadata for %s: %v", mediaFile.OriginalPath, err)
+		log.Warn().Err(err).Str("file", mediaFile.OriginalPath).Msg("Failed to fetch additional metadata")
 	}
 
 	// Generate destination path
 	destPath, err := p.generateDestinationPath(result)
 	if err != nil {
-		// Update status to failed
-		mediaFile.Status = "failed"
-		mediaFile.ErrorMessage = fmt.Sprintf("Error generating destination path: %v", err)
-		mediaFile.UpdatedAt = time.Now()
-		_ = p.db.UpdateMediaFile(mediaFile)
-
-		// Create notification
-		_ = p.createErrorNotification(mediaFile, fmt.Sprintf("Error generating destination path: %v", err))
-
-		return fmt.Errorf("error generating destination path: %w", err)
+		return p.handleProcessingError(mediaFile, err, "Generating destination path")
 	}
 
 	// Process the file
 	destFilePath, err := p.fileOps.ProcessFile(mediaFile.OriginalPath, destPath)
 	if err != nil {
-		// Update status to failed
-		mediaFile.Status = "failed"
-		mediaFile.ErrorMessage = fmt.Sprintf("Error processing file: %v", err)
-		mediaFile.UpdatedAt = time.Now()
-		_ = p.db.UpdateMediaFile(mediaFile)
-
-		// Create notification
-		_ = p.createErrorNotification(mediaFile, fmt.Sprintf("Error processing file: %v", err))
-
-		return fmt.Errorf("error processing file: %w", err)
+		return p.handleProcessingError(mediaFile, err, "Processing file")
 	}
 
 	// Update media file record
@@ -157,13 +150,18 @@ func (p *Processor) ProcessMediaFile(ctx context.Context, mediaFile *models.Medi
 
 	// Create NFO files and download images
 	if err := p.createMetadataFiles(ctx, mediaFile, mediaInfo, result); err != nil {
-		log.Printf("Warning: Error creating metadata files for %s: %v", mediaFile.OriginalPath, err)
+		log.Warn().Err(err).Str("file", mediaFile.OriginalPath).Msg("Failed to create metadata files")
 	}
 
 	// Create success notification
-	_ = p.createSuccessNotification(mediaFile, mediaInfo)
+	if err := p.createSuccessNotification(mediaFile, mediaInfo); err != nil {
+		log.Warn().Err(err).Str("file", mediaFile.OriginalPath).Msg("Failed to create success notification")
+	}
 
-	log.Printf("Successfully processed media file: %s -> %s", mediaFile.OriginalPath, mediaFile.DestinationPath)
+	log.Info().
+		Str("source", mediaFile.OriginalPath).
+		Str("destination", mediaFile.DestinationPath).
+		Msg("Media file processed successfully")
 	return nil
 }
 

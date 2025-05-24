@@ -1,8 +1,19 @@
 # MediaScanner Configuration
 
 # General settings
-log_level: "info"
+log_level: "info"  # Deprecated: use logger.level instead
 scan_interval: 5  # in minutes
+
+# Logger settings
+logger:
+  level: "info"  # debug, info, warn, error, fatal
+  format: "json"  # json, console
+  output: "stdout"  # stdout, stderr, file
+  file: "logs/mediascanner.log"  # only used if output is "file"
+  max_size: 100  # maximum size in megabytes before rotation
+  max_backups: 3  # maximum number of old log files to retain
+  max_age: 28  # maximum number of days to retain old log files
+  compress: true  # compress rotated log files
 
 # LLM settings
 llm:
@@ -56,6 +67,22 @@ apis:
     language: "zh-CN"
     user_agent: "sleepstars/MediaScanner (https://github.com/sleepstars/MediaScanner)"
 
+  # Rate limiting settings
+  rate_limiting:
+    enabled: true
+    tmdb: 5.0        # 5 requests per second for TMDB
+    tvdb: 2.0        # 2 requests per second for TVDB
+    bangumi: 1.0     # 1 request per second for Bangumi
+    tmdb_burst: 10   # Burst of 10 requests for TMDB
+    tvdb_burst: 5    # Burst of 5 requests for TVDB
+    bangumi_burst: 3 # Burst of 3 requests for Bangumi
+
+  # Cache settings
+  cache:
+    enabled: true
+    search_ttl: 24     # Cache search results for 24 hours
+    details_ttl: 168   # Cache details for 7 days (7*24=168 hours)
+
 # Database settings
 database:
   type: "postgres"
@@ -87,6 +114,13 @@ scanner:
     - ".mov"
     - ".wmv"
   batch_threshold: 50
+  scan_interval: 5  # Scan interval in minutes
+
+  # File system monitoring settings
+  use_watcher: true  # Use file system events instead of polling
+  watcher_settings:
+    recursive: true  # Watch subdirectories recursively
+    process_delay: 30  # Delay in seconds before processing a new file
 
 # File operations settings
 file_ops:

@@ -2,11 +2,11 @@ package notification
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/sleepstars/mediascanner/internal/config"
 	"github.com/sleepstars/mediascanner/internal/database"
 	"github.com/sleepstars/mediascanner/internal/models"
@@ -50,12 +50,12 @@ func (n *Notifier) SendPendingNotifications() error {
 		} else if notification.Type == "error" {
 			err = n.sendErrorNotification(&notification)
 		} else {
-			log.Printf("Unknown notification type: %s", notification.Type)
+			log.Warn().Str("type", notification.Type).Msg("Unknown notification type")
 			continue
 		}
 
 		if err != nil {
-			log.Printf("Error sending notification: %v", err)
+			log.Error().Err(err).Int64("notification_id", notification.ID).Msg("Failed to send notification")
 			continue
 		}
 
@@ -63,7 +63,9 @@ func (n *Notifier) SendPendingNotifications() error {
 		notification.Sent = true
 		notification.SentAt = time.Now()
 		if err := n.db.UpdateNotification(&notification); err != nil {
-			log.Printf("Error updating notification status: %v", err)
+			log.Error().Err(err).Int64("notification_id", notification.ID).Msg("Failed to update notification status")
+		} else {
+			log.Debug().Int64("notification_id", notification.ID).Str("type", notification.Type).Msg("Notification sent successfully")
 		}
 	}
 

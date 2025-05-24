@@ -12,20 +12,23 @@ import (
 	"github.com/sleepstars/mediascanner/internal/config"
 	"github.com/sleepstars/mediascanner/internal/database"
 	"github.com/sleepstars/mediascanner/internal/models"
+	"github.com/sleepstars/mediascanner/internal/ratelimiter"
 )
 
 // BangumiClient represents the Bangumi API client
 type BangumiClient struct {
-	apiKey     string
-	baseURL    string
-	language   string
-	userAgent  string
-	httpClient *http.Client
-	db         *database.Database
+	apiKey      string
+	baseURL     string
+	language    string
+	userAgent   string
+	httpClient  *http.Client
+	db          *database.Database
+	rateLimiter *ratelimiter.ProviderRateLimiter
+	cacheConfig *config.CacheConfig
 }
 
 // NewBangumiClient creates a new Bangumi API client
-func NewBangumiClient(cfg *config.BangumiConfig, db *database.Database) (*BangumiClient, error) {
+func NewBangumiClient(cfg *config.BangumiConfig, db *database.Database, rateLimiter *ratelimiter.ProviderRateLimiter, cacheConfig *config.CacheConfig) (*BangumiClient, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("Bangumi API key is required")
 	}
@@ -38,30 +41,45 @@ func NewBangumiClient(cfg *config.BangumiConfig, db *database.Database) (*Bangum
 		userAgent = "sleepstars/MediaScanner (https://github.com/sleepstars/MediaScanner)"
 	}
 
+	// Create optimized HTTP client for Bangumi
+	httpClient := NewOptimizedHTTPClient(APISpecificHTTPClientConfig("bangumi"))
+
 	return &BangumiClient{
-		apiKey:     cfg.APIKey,
-		baseURL:    "https://api.bgm.tv/v0",
-		language:   cfg.Language,
-		userAgent:  userAgent,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		db:         db,
+		apiKey:      cfg.APIKey,
+		baseURL:     "https://api.bgm.tv/v0",
+		language:    cfg.Language,
+		userAgent:   userAgent,
+		httpClient:  httpClient,
+		db:          db,
+		rateLimiter: rateLimiter,
+		cacheConfig: cacheConfig,
 	}, nil
 }
 
 // SearchAnime searches for anime
 func (c *BangumiClient) SearchAnime(ctx context.Context, query string) (*BangumiSearchResult, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("search:%s", query)
-	cache, err := c.db.GetAPICache("bangumi", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result BangumiSearchResult
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("search:%s", query)
+		cache, err := c.db.GetAPICache("bangumi", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result BangumiSearchResult
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "bangumi"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	endpoint := fmt.Sprintf("%s/search/subjects?keyword=%s&type=2", c.baseURL, url.QueryEscape(query))
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -134,16 +152,24 @@ func (c *BangumiClient) SearchAnime(ctx context.Context, query string) (*Bangumi
 		})
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "bangumi",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(24 * time.Hour), // Cache for 24 hours
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.SearchTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 24 * time.Hour // Default to 24 hours if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "bangumi",
+				Query:     fmt.Sprintf("search:%s", query),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -151,18 +177,28 @@ func (c *BangumiClient) SearchAnime(ctx context.Context, query string) (*Bangumi
 
 // GetAnimeDetails gets details for an anime
 func (c *BangumiClient) GetAnimeDetails(ctx context.Context, id int) (*BangumiAnimeDetails, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("anime:%d", id)
-	cache, err := c.db.GetAPICache("bangumi", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result BangumiAnimeDetails
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("anime:%d", id)
+		cache, err := c.db.GetAPICache("bangumi", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result BangumiAnimeDetails
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "bangumi"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	endpoint := fmt.Sprintf("%s/subjects/%d", c.baseURL, id)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -209,8 +245,8 @@ func (c *BangumiClient) GetAnimeDetails(ctx context.Context, id int) (*BangumiAn
 			Count int    `json:"count"`
 		} `json:"tags"`
 		Infobox []struct {
-			Key   string      `json:"key"`
-			Value interface{} `json:"value"`
+			Key   string `json:"key"`
+			Value any    `json:"value"`
 		} `json:"infobox"`
 		Episodes []struct {
 			ID      int    `json:"id"`
@@ -265,16 +301,24 @@ func (c *BangumiClient) GetAnimeDetails(ctx context.Context, id int) (*BangumiAn
 		Episodes: episodes,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "bangumi",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "bangumi",
+				Query:     fmt.Sprintf("anime:%d", id),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil

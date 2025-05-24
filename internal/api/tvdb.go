@@ -12,46 +12,64 @@ import (
 	"github.com/sleepstars/mediascanner/internal/config"
 	"github.com/sleepstars/mediascanner/internal/database"
 	"github.com/sleepstars/mediascanner/internal/models"
+	"github.com/sleepstars/mediascanner/internal/ratelimiter"
 )
 
 // TVDBClient represents the TVDB API client
 type TVDBClient struct {
-	apiKey     string
-	baseURL    string
-	language   string
-	httpClient *http.Client
-	db         *database.Database
+	apiKey      string
+	baseURL     string
+	language    string
+	httpClient  *http.Client
+	db          *database.Database
+	rateLimiter *ratelimiter.ProviderRateLimiter
+	cacheConfig *config.CacheConfig
 }
 
 // NewTVDBClient creates a new TVDB API client
-func NewTVDBClient(cfg *config.TVDBConfig, db *database.Database) (*TVDBClient, error) {
+func NewTVDBClient(cfg *config.TVDBConfig, db *database.Database, rateLimiter *ratelimiter.ProviderRateLimiter, cacheConfig *config.CacheConfig) (*TVDBClient, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("TVDB API key is required")
 	}
 
+	// Create optimized HTTP client for TVDB
+	httpClient := NewOptimizedHTTPClient(APISpecificHTTPClientConfig("tvdb"))
+
 	return &TVDBClient{
-		apiKey:     cfg.APIKey,
-		baseURL:    "https://api.thetvdb.com/v4",
-		language:   cfg.Language,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		db:         db,
+		apiKey:      cfg.APIKey,
+		baseURL:     "https://api.thetvdb.com/v4",
+		language:    cfg.Language,
+		httpClient:  httpClient,
+		db:          db,
+		rateLimiter: rateLimiter,
+		cacheConfig: cacheConfig,
 	}, nil
 }
 
 // SearchSeries searches for a TV series
 func (c *TVDBClient) SearchSeries(ctx context.Context, query string) (*TVDBSearchResult, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("search:%s", query)
-	cache, err := c.db.GetAPICache("tvdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result TVDBSearchResult
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("search:%s", query)
+		cache, err := c.db.GetAPICache("tvdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result TVDBSearchResult
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tvdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	endpoint := fmt.Sprintf("%s/search?query=%s", c.baseURL, url.QueryEscape(query))
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -77,16 +95,16 @@ func (c *TVDBClient) SearchSeries(ctx context.Context, query string) (*TVDBSearc
 
 	var apiResp struct {
 		Data []struct {
-			ID           int    `json:"id"`
-			Name         string `json:"name"`
-			Type         string `json:"type"`
-			FirstAired   string `json:"first_aired,omitempty"`
-			Overview     string `json:"overview,omitempty"`
-			PosterURL    string `json:"poster,omitempty"`
-			BackdropURL  string `json:"backdrop,omitempty"`
-			Status       string `json:"status,omitempty"`
-			Network      string `json:"network,omitempty"`
-			TVDBScore    int    `json:"tvdb_score,omitempty"`
+			ID          int    `json:"id"`
+			Name        string `json:"name"`
+			Type        string `json:"type"`
+			FirstAired  string `json:"first_aired,omitempty"`
+			Overview    string `json:"overview,omitempty"`
+			PosterURL   string `json:"poster,omitempty"`
+			BackdropURL string `json:"backdrop,omitempty"`
+			Status      string `json:"status,omitempty"`
+			Network     string `json:"network,omitempty"`
+			TVDBScore   int    `json:"tvdb_score,omitempty"`
 		} `json:"data"`
 	}
 
@@ -115,28 +133,36 @@ func (c *TVDBClient) SearchSeries(ctx context.Context, query string) (*TVDBSearc
 		}
 
 		result.Series = append(result.Series, TVDBSeries{
-			ID:            item.ID,
-			Name:          item.Name,
+			ID:             item.ID,
+			Name:           item.Name,
 			FirstAiredYear: firstAiredYear,
-			Overview:      item.Overview,
-			PosterURL:     item.PosterURL,
-			BackdropURL:   item.BackdropURL,
-			Status:        item.Status,
-			Network:       item.Network,
-			TVDBScore:     item.TVDBScore,
+			Overview:       item.Overview,
+			PosterURL:      item.PosterURL,
+			BackdropURL:    item.BackdropURL,
+			Status:         item.Status,
+			Network:        item.Network,
+			TVDBScore:      item.TVDBScore,
 		})
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tvdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(24 * time.Hour), // Cache for 24 hours
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.SearchTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 24 * time.Hour // Default to 24 hours if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tvdb",
+				Query:     fmt.Sprintf("search:%s", query),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -144,18 +170,28 @@ func (c *TVDBClient) SearchSeries(ctx context.Context, query string) (*TVDBSearc
 
 // GetSeriesDetails gets details for a TV series
 func (c *TVDBClient) GetSeriesDetails(ctx context.Context, id int) (*TVDBSeriesDetails, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("series:%d", id)
-	cache, err := c.db.GetAPICache("tvdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result TVDBSeriesDetails
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("series:%d", id)
+		cache, err := c.db.GetAPICache("tvdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result TVDBSeriesDetails
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tvdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	endpoint := fmt.Sprintf("%s/series/%d/extended", c.baseURL, id)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -181,16 +217,16 @@ func (c *TVDBClient) GetSeriesDetails(ctx context.Context, id int) (*TVDBSeriesD
 
 	var apiResp struct {
 		Data struct {
-			ID           int    `json:"id"`
-			Name         string `json:"name"`
-			Overview     string `json:"overview"`
-			FirstAired   string `json:"first_aired"`
-			Status       string `json:"status"`
-			Network      string `json:"network"`
-			ImdbID       string `json:"imdb_id"`
-			PosterURL    string `json:"poster"`
-			BackdropURL  string `json:"backdrop"`
-			Seasons      []struct {
+			ID          int    `json:"id"`
+			Name        string `json:"name"`
+			Overview    string `json:"overview"`
+			FirstAired  string `json:"first_aired"`
+			Status      string `json:"status"`
+			Network     string `json:"network"`
+			ImdbID      string `json:"imdb_id"`
+			PosterURL   string `json:"poster"`
+			BackdropURL string `json:"backdrop"`
+			Seasons     []struct {
 				ID           int    `json:"id"`
 				Name         string `json:"name"`
 				Number       int    `json:"number"`
@@ -259,31 +295,39 @@ func (c *TVDBClient) GetSeriesDetails(ctx context.Context, id int) (*TVDBSeriesD
 
 	// Create result
 	result := &TVDBSeriesDetails{
-		ID:            apiResp.Data.ID,
-		Name:          apiResp.Data.Name,
-		Overview:      apiResp.Data.Overview,
+		ID:             apiResp.Data.ID,
+		Name:           apiResp.Data.Name,
+		Overview:       apiResp.Data.Overview,
 		FirstAiredYear: firstAiredYear,
-		Status:        apiResp.Data.Status,
-		Network:       apiResp.Data.Network,
-		ImdbID:        apiResp.Data.ImdbID,
-		PosterURL:     apiResp.Data.PosterURL,
-		BackdropURL:   apiResp.Data.BackdropURL,
-		Seasons:       seasons,
-		Genres:        genres,
-		Countries:     countries,
-		Languages:     languages,
+		Status:         apiResp.Data.Status,
+		Network:        apiResp.Data.Network,
+		ImdbID:         apiResp.Data.ImdbID,
+		PosterURL:      apiResp.Data.PosterURL,
+		BackdropURL:    apiResp.Data.BackdropURL,
+		Seasons:        seasons,
+		Genres:         genres,
+		Countries:      countries,
+		Languages:      languages,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tvdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tvdb",
+				Query:     fmt.Sprintf("series:%d", id),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -291,18 +335,28 @@ func (c *TVDBClient) GetSeriesDetails(ctx context.Context, id int) (*TVDBSeriesD
 
 // GetSeasonEpisodes gets episodes for a TV series season
 func (c *TVDBClient) GetSeasonEpisodes(ctx context.Context, seasonID int) (*TVDBSeasonEpisodes, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("season_episodes:%d", seasonID)
-	cache, err := c.db.GetAPICache("tvdb", cacheKey)
-	if err == nil {
-		// Cache hit
-		var result TVDBSeasonEpisodes
-		if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
-			return &result, nil
+	// Check if cache is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		// Check cache first
+		cacheKey := fmt.Sprintf("season_episodes:%d", seasonID)
+		cache, err := c.db.GetAPICache("tvdb", cacheKey)
+		if err == nil {
+			// Cache hit
+			var result TVDBSeasonEpisodes
+			if err := json.Unmarshal([]byte(cache.Response), &result); err == nil {
+				return &result, nil
+			}
 		}
 	}
 
-	// Cache miss, perform API call
+	// Apply rate limiting if enabled
+	if c.rateLimiter != nil {
+		if err := c.rateLimiter.Wait(ctx, "tvdb"); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+	}
+
+	// Cache miss or cache disabled, perform API call
 	endpoint := fmt.Sprintf("%s/seasons/%d/extended", c.baseURL, seasonID)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -371,16 +425,24 @@ func (c *TVDBClient) GetSeasonEpisodes(ctx context.Context, seasonID int) (*TVDB
 		Episodes: episodes,
 	}
 
-	// Cache the result
-	resultJSON, err := json.Marshal(result)
-	if err == nil {
-		cache := &models.APICache{
-			Provider:  "tvdb",
-			Query:     cacheKey,
-			Response:  string(resultJSON),
-			ExpiresAt: time.Now().Add(7 * 24 * time.Hour), // Cache for 7 days
+	// Cache the result if caching is enabled
+	if c.cacheConfig != nil && c.cacheConfig.Enabled {
+		resultJSON, err := json.Marshal(result)
+		if err == nil {
+			// Calculate cache expiration based on configuration
+			ttl := time.Duration(c.cacheConfig.DetailsTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 7 * 24 * time.Hour // Default to 7 days if not configured
+			}
+
+			cache := &models.APICache{
+				Provider:  "tvdb",
+				Query:     fmt.Sprintf("season_episodes:%d", seasonID),
+				Response:  string(resultJSON),
+				ExpiresAt: time.Now().Add(ttl),
+			}
+			_ = c.db.CreateAPICache(cache)
 		}
-		_ = c.db.CreateAPICache(cache)
 	}
 
 	return result, nil
@@ -407,19 +469,19 @@ type TVDBSearchResult struct {
 
 // TVDBSeriesDetails represents detailed information about a TV series
 type TVDBSeriesDetails struct {
-	ID             int         `json:"id"`
-	Name           string      `json:"name"`
-	Overview       string      `json:"overview"`
-	FirstAiredYear int         `json:"first_aired_year"`
-	Status         string      `json:"status"`
-	Network        string      `json:"network"`
-	ImdbID         string      `json:"imdb_id"`
-	PosterURL      string      `json:"poster_url"`
-	BackdropURL    string      `json:"backdrop_url"`
+	ID             int          `json:"id"`
+	Name           string       `json:"name"`
+	Overview       string       `json:"overview"`
+	FirstAiredYear int          `json:"first_aired_year"`
+	Status         string       `json:"status"`
+	Network        string       `json:"network"`
+	ImdbID         string       `json:"imdb_id"`
+	PosterURL      string       `json:"poster_url"`
+	BackdropURL    string       `json:"backdrop_url"`
 	Seasons        []TVDBSeason `json:"seasons"`
-	Genres         []string    `json:"genres"`
-	Countries      []string    `json:"countries"`
-	Languages      []string    `json:"languages"`
+	Genres         []string     `json:"genres"`
+	Countries      []string     `json:"countries"`
+	Languages      []string     `json:"languages"`
 }
 
 // TVDBSeason represents a TV series season
@@ -434,10 +496,10 @@ type TVDBSeason struct {
 
 // TVDBSeasonEpisodes represents episodes for a TV series season
 type TVDBSeasonEpisodes struct {
-	ID       int          `json:"id"`
-	Name     string       `json:"name"`
-	Number   int          `json:"number"`
-	SeriesID int          `json:"series_id"`
+	ID       int           `json:"id"`
+	Name     string        `json:"name"`
+	Number   int           `json:"number"`
+	SeriesID int           `json:"series_id"`
 	Episodes []TVDBEpisode `json:"episodes"`
 }
 

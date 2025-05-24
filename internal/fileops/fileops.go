@@ -24,10 +24,23 @@ func New(cfg *config.FileOpsConfig) *FileOps {
 
 // ProcessFile processes a file (copy, move, or symlink)
 func (f *FileOps) ProcessFile(sourcePath, destDir string) (string, error) {
+	// Validate input parameters
+	if sourcePath == "" {
+		return "", fmt.Errorf("source path cannot be empty")
+	}
+	if destDir == "" {
+		return "", fmt.Errorf("destination directory cannot be empty")
+	}
+
 	// Check if source file exists
-	_, err := os.Stat(sourcePath)
+	sourceInfo, err := os.Stat(sourcePath)
 	if err != nil {
 		return "", fmt.Errorf("error getting file info: %w", err)
+	}
+
+	// Ensure source is a regular file
+	if !sourceInfo.Mode().IsRegular() {
+		return "", fmt.Errorf("source is not a regular file: %s", sourcePath)
 	}
 
 	// Create destination directory if it doesn't exist
